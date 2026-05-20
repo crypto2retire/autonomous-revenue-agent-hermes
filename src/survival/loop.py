@@ -36,6 +36,7 @@ class SurvivalLoop:
         self.marketplace = ServiceMarketplace(self.venice, self.wsic)
 
         self._running = False
+        self._trading_enabled = True  # Can be toggled via dashboard
         self._cycle_count = 0
         self._start_time: Optional[datetime] = None
 
@@ -107,16 +108,19 @@ class SurvivalLoop:
 
     async def _normal_operations(self):
         """Normal operation mode - seek growth opportunities."""
-        # Scan for trading opportunities
-        opportunities = await self.scanner.scan()
+        # Scan for trading opportunities only if trading is enabled
+        if self._trading_enabled:
+            opportunities = await self.scanner.scan()
 
-        for opp in opportunities:
-            if opp.ai_signal == "buy" and opp.ai_confidence and opp.ai_confidence > Decimal("0.7"):
-                success = await self.trade.execute_opportunity(opp)
-                if success and opp.pnl_usd:
-                    self._total_trading_pnl += opp.pnl_usd
+            for opp in opportunities:
+                if opp.ai_signal == "buy" and opp.ai_confidence and opp.ai_confidence > Decimal("0.7"):
+                    success = await self.trade.execute_opportunity(opp)
+                    if success and opp.pnl_usd:
+                        self._total_trading_pnl += opp.pnl_usd
+        else:
+            logger.info("trading_disabled_skipping_opportunities")
 
-        # Check service opportunities
+        # Check service opportunities (always run)
         service_opps = await self.marketplace.find_service_opportunities()
         for opp in service_opps:
             logger.info("service_opportunity_found", **opp)
@@ -137,18 +141,21 @@ class SurvivalLoop:
         if revenue > 0:
             self._total_service_revenue += revenue
 
-        # Only take very high confidence trades
-        opportunities = await self.scanner.scan()
-        for opp in opportunities:
-            if (
-                opp.ai_signal == "buy"
-                and opp.ai_confidence
-                and opp.ai_confidence > Decimal("0.85")
-                and opp.ai_risk_level == "low"
-            ):
-                success = await self.trade.execute_opportunity(opp)
-                if success and opp.pnl_usd:
-                    self._total_trading_pnl += opp.pnl_usd
+        # Only take very high confidence trades if trading enabled
+        if self._trading_enabled:
+            opportunities = await self.scanner.scan()
+            for opp in opportunities:
+                if (
+                    opp.ai_signal == "buy"
+                    and opp.ai_confidence
+                    and opp.ai_confidence > Decimal("0.85")
+                    and opp.ai_risk_level == "low"
+                ):
+                    success = await self.trade.execute_opportunity(opp)
+                    if success and opp.pnl_usd:
+                        self._total_trading_pnl += opp.pnl_usd
+        else:
+            logger.warning("survival_mode_trading_disabled")
 
     async def _emergency_shutdown(self):
         """Emergency shutdown - preserve capital."""
@@ -183,6 +190,7 @@ class SurvivalLoop:
         return {
             "agent_name": settings.agent_name,
             "agent_mode": settings.agent_mode,
+            "trading_enabled": self._trading_enabled,
             "cycle_count": self._cycle_count,
             "uptime_hours": self._get_uptime_hours(),
             "financial": health,
@@ -194,6 +202,21 @@ class SurvivalLoop:
             },
             "timestamp": datetime.utcnow().isoformat(),
         }
+
+    def enable_trading(self):
+        """Enable trading."""
+        self._trading_enabled = True
+        logger.critical("trading_enabled")
+
+    def disable_trading(self):
+        """Disable trading (stop live/paper trades but keep agent running)."""
+        self._trading_enabled = False
+        logger.critical("trading_disabled")
+
+    @property
+    def is_trading_enabled(self) -> bool:
+        """Check if trading is currently enabled."""
+        return self._trading_enabled
 
     def stop(self):
         """Stop the survival loop."""

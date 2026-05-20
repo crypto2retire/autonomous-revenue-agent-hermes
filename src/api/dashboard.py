@@ -50,6 +50,7 @@ class AgentStatus(BaseModel):
     wallet_configured: bool
     wallet_address: str | None
     mode: str
+    trading_enabled: bool = True
     version: str = "1.0.0"
 
 
@@ -60,6 +61,12 @@ class ModeUpdateRequest(BaseModel):
 class ModeUpdateResponse(BaseModel):
     success: bool
     mode: str
+    message: str
+
+
+class TradingToggleResponse(BaseModel):
+    success: bool
+    trading_enabled: bool
     message: str
 
 
@@ -277,6 +284,10 @@ DASHBOARD_HTML = """
                         <span class="status-badge status-paper" id="mode-badge">Paper Trading</span>
                     </div>
                     <div class="metric">
+                        <span class="metric-label">Trading</span>
+                        <span class="status-badge status-running" id="trading-badge">Enabled</span>
+                    </div>
+                    <div class="metric">
                         <span class="metric-label">Version</span>
                         <span class="metric-value">1.0.0</span>
                     </div>
@@ -326,6 +337,7 @@ DASHBOARD_HTML = """
                     <h2>Quick Actions</h2>
                     <button class="btn" onclick="refreshStatus()">Refresh Status</button>
                     <button class="btn btn-secondary" id="mode-btn" onclick="switchMode()">Switch to Live Mode</button>
+                    <button class="btn btn-secondary" id="trading-btn" onclick="toggleTrading()" style="background: #ff4444;">Stop Trading</button>
                     <button class="btn btn-secondary" onclick="location.reload()">Reload Dashboard</button>
                 </div>
             </div>
@@ -409,6 +421,20 @@ DASHBOARD_HTML = """
                     modeBadge.textContent = 'Paper Trading';
                     modeBadge.className = 'status-badge status-paper';
                 }
+                // Update trading badge
+                const tradingBadge = document.getElementById('trading-badge');
+                const tradingBtn = document.getElementById('trading-btn');
+                if (data.trading_enabled === false) {
+                    tradingBadge.textContent = 'DISABLED';
+                    tradingBadge.className = 'status-badge status-live';
+                    tradingBtn.textContent = 'Resume Trading';
+                    tradingBtn.style.background = '#00ff88';
+                } else {
+                    tradingBadge.textContent = 'Enabled';
+                    tradingBadge.className = 'status-badge status-running';
+                    tradingBtn.textContent = 'Stop Trading';
+                    tradingBtn.style.background = '#ff4444';
+                }
             } catch (e) {
                 console.error('Failed to fetch status:', e);
             }
@@ -489,6 +515,28 @@ DASHBOARD_HTML = """
             }
         }
 
+        // Toggle trading
+        async function toggleTrading() {
+            const isEnabled = document.getElementById('trading-badge').textContent === 'Enabled';
+            const action = isEnabled ? 'stop' : 'start';
+            const confirmMsg = isEnabled 
+                ? 'STOP all trading? The agent will keep running but will NOT execute any trades.' 
+                : 'RESUME trading? The agent will start executing trades again.';
+            
+            if (!confirm(confirmMsg)) return;
+            
+            try {
+                const res = await fetch('/trading/' + action, { method: 'POST' });
+                const data = await res.json();
+                alert(data.message);
+                if (data.success) {
+                    refreshStatus();
+                }
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+        }
+
         // Fetch opportunities
         async function fetchOpportunities() {
             const container = document.getElementById('opportunities-list');
@@ -558,11 +606,13 @@ async def root():
 @app.get("/status", response_model=AgentStatus)
 async def get_status():
     """Get current agent status."""
+    from main import agent
     return AgentStatus(
         status="running",
         wallet_configured=wallet_manager.is_configured(),
         wallet_address=wallet_manager.get_address(),
         mode=settings.agent_mode,
+        trading_enabled=agent.is_trading_enabled if hasattr(agent, 'is_trading_enabled') else True,
     )
 
 
@@ -726,5 +776,49 @@ async def update_mode(request: ModeUpdateRequest):
             message=f"Agent switched to {request.mode.upper()} mode. "
                     + ("REAL FUNDS WILL BE USED!" if request.mode == "live" else "Simulated trading only."),
         )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/trading/stop", response_model=TradingToggleResponse)
+async def stop_trading():
+    """Stop trading - agent keeps running but won't execute trades."""
+    try:
+        from main import agent
+        if agent:
+            agent.disable_trading()
+            return TradingToggleResponse(
+                success=True,
+                trading_enabled=False,
+                message="Trading STOPPED. Agent is still running but will NOT execute any trades.",
+            )
+        else:
+            return TradingToggleResponse(
+                success=False,
+                trading_enabled=True,
+                message="Agent not initialized yet.",
+            )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/trading/start", response_model=TradingToggleResponse)
+async def start_trading():
+    """Resume trading."""
+    try:
+        from main import agent
+        if agent:
+            agent.enable_trading()
+            return TradingToggleResponse(
+                success=True,
+                trading_enabled=True,
+                message="Trading RESUMED. Agent will execute trades again.",
+            )
+        else:
+            return TradingToggleResponse(
+                success=False,
+                trading_enabled=False,
+                message="Agent not initialized yet.",
+            )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
