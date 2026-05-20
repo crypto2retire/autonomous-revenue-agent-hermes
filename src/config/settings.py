@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     database_url: SecretStr = Field(..., description="PostgreSQL connection string")
     redis_url: str = "redis://localhost:6379/0"
 
+    # BaseScan
+    basescan_api_key: SecretStr = Field(default=SecretStr(""), description="BaseScan API key")
+
     # WhatShouldICharge Integration
     wsic_api_key: SecretStr = Field(..., description="WhatShouldICharge API key")
     wsic_base_url: str = "https://api.whatshouldicharge.app"
