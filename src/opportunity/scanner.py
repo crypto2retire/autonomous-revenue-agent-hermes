@@ -14,6 +14,7 @@ from src.opportunity.models import (
 )
 from src.data.dexscreener import DexScreenerClient
 from src.data.basescan import BaseScanClient
+from src.data.historical import HistoricalTracker
 from src.venice import VeniceClient
 from src.utils.logger import get_logger
 
@@ -28,11 +29,13 @@ class OpportunityScanner:
         venice_client: VeniceClient,
         dexscreener=None,
         basescan=None,
+        historical=None,
         filter_criteria=None,
     ):
         self.venice = venice_client
         self.dexscreener = dexscreener or DexScreenerClient()
         self.basescan = basescan or BaseScanClient()
+        self.historical = historical or HistoricalTracker()
         self.filter = filter_criteria or OpportunityFilter()
         self._running = False
 
@@ -154,6 +157,31 @@ class OpportunityScanner:
             avg_trade_size_usd=metrics.get("volume_24h", Decimal("0")) / max(metrics.get("buys_24h", 0) + metrics.get("sells_24h", 0), 1),
         )
 
+        # Store snapshot for historical tracking
+        await self.historical.store_snapshot(
+            token_address=token_address,
+            chain=chain,
+            price_usd=metrics.get("price_usd", Decimal("0")),
+            total_holders=holder_metrics.total_holders,
+            volume_24h=volume_metrics.volume_24h_usd,
+            liquidity_usd=volume_metrics.liquidity_usd,
+            market_cap=metrics.get("market_cap"),
+            fdv=metrics.get("fdv"),
+            concentration_top_10=holder_metrics.concentration_top_10,
+            concentration_top_50=holder_metrics.concentration_top_50,
+            buy_sell_ratio=volume_metrics.buy_sell_ratio,
+        )
+
+        # Get historical trends
+        holder_growth_24h = await self.historical.get_holder_growth_rate(token_address, hours=24)
+        holder_growth_7d = await self.historical.get_holder_growth_rate(token_address, hours=168)
+        volume_change_24h = await self.historical.get_volume_change(token_address, hours=24)
+        volume_change_7d = await self.historical.get_volume_change(token_address, hours=168)
+
+        # Update metrics with historical data
+        holder_metrics.holder_growth_rate = holder_growth_24h
+        volume_metrics.volume_change_24h_pct = volume_change_24h
+
         # Create opportunity
         opportunity = Opportunity(
             token_address=token_address,
@@ -169,7 +197,7 @@ class OpportunityScanner:
             volume_metrics=volume_metrics,
         )
 
-        # Get AI analysis
+        # Get AI analysis with historical context
         try:
             analysis = await self.venice.analyze_opportunity(
                 token_data={
@@ -183,8 +211,16 @@ class OpportunityScanner:
                     "buy_sell_ratio": float(metrics.get("buy_sell_ratio", 1)),
                     "pair_created_at": metrics.get("pair_created_at"),
                 },
-                holder_data=holder_metrics.model_dump(),
-                volume_data=volume_metrics.model_dump(),
+                holder_data={
+                    **holder_metrics.model_dump(),
+                    "holder_growth_24h": float(holder_growth_24h),
+                    "holder_growth_7d": float(holder_growth_7d),
+                },
+                volume_data={
+                    **volume_metrics.model_dump(),
+                    "volume_change_24h": float(volume_change_24h),
+                    "volume_change_7d": float(volume_change_7d),
+                },
             )
 
             opportunity.ai_signal = analysis.get("signal")
@@ -293,3 +329,4 @@ class OpportunityScanner:
         """Close all data clients."""
         await self.dexscreener.close()
         await self.basescan.close()
+        await self.historical.close()
