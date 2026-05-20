@@ -1,4 +1,4 @@
-app = "autonomous-revenue-agent"
+app = "autonomous-revenue-agent-hermes"
 primary_region = "ord"
 
 [build]

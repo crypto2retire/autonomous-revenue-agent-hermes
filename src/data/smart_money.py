@@ -41,8 +41,8 @@ class SmartMoneyTracker:
         dune_api_key: Optional[str] = None,
         nansen_api_key: Optional[str] = None,
     ):
-        self.dune_api_key = dune_api_key or getattr(settings, 'dune_api_key', None)
-        self.nansen_api_key = nansen_api_key or getattr(settings, 'nansen_api_key', None)
+        self.dune_api_key = dune_api_key or (settings.dune_api_key.get_secret_value() if settings.dune_api_key else None)
+        self.nansen_api_key = nansen_api_key or (settings.nansen_api_key.get_secret_value() if settings.nansen_api_key else None)
         
         self.dune_client = None
         self.nansen_client = None
