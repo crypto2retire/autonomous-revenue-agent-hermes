@@ -93,11 +93,11 @@ class Opportunity(BaseModel):
 
 class OpportunityFilter(BaseModel):
     """Filter criteria for opportunities."""
-    min_holders: int = Field(default=100)
-    min_volume_24h_usd: Decimal = Field(default=Decimal("10000"))
-    min_liquidity_usd: Decimal = Field(default=Decimal("50000"))
-    max_concentration_top_10: Decimal = Field(default=Decimal("50.0"))
-    min_holder_growth_rate: Decimal = Field(default=Decimal("5.0"))
-    min_buy_sell_ratio: Decimal = Field(default=Decimal("1.2"))
-    chains: list[str] = Field(default=["base"])
+    min_holders: int = Field(default=10)
+    min_volume_24h_usd: Decimal = Field(default=Decimal("1000"))
+    min_liquidity_usd: Decimal = Field(default=Decimal("5000"))
+    max_concentration_top_10: Decimal = Field(default=Decimal("80.0"))
+    min_holder_growth_rate: Decimal = Field(default=Decimal("-100.0"))
+    min_buy_sell_ratio: Decimal = Field(default=Decimal("0.5"))
+    chains: list[str] = Field(default=["base", "solana", "ethereum"])
     exclude_tokens: list[str] = Field(default_factory=list)

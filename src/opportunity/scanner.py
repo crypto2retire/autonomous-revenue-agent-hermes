@@ -207,6 +207,40 @@ class OpportunityScanner:
 
         # Get AI analysis with historical context
         try:
+            # Convert Decimal to float for JSON serialization
+            holder_data_dict = {
+                "total_holders": holder_metrics.total_holders,
+                "new_holders_24h": holder_metrics.new_holders_24h,
+                "new_holders_7d": holder_metrics.new_holders_7d,
+                "active_holders_24h": holder_metrics.active_holders_24h,
+                "concentration_top_10": float(holder_metrics.concentration_top_10),
+                "concentration_top_50": float(holder_metrics.concentration_top_50),
+                "smart_money_inflows_24h": float(holder_metrics.smart_money_inflows_24h),
+                "smart_money_outflows_24h": float(holder_metrics.smart_money_outflows_24h),
+                "avg_hold_time_days": float(holder_metrics.avg_hold_time_days),
+                "holder_growth_rate": float(holder_metrics.holder_growth_rate),
+                "holder_growth_24h": float(holder_growth_24h),
+                "holder_growth_7d": float(holder_growth_7d),
+                "smart_money_signal": smart_money_signals.get("signal", "neutral"),
+                "smart_money_confidence": float(smart_money_signals.get("confidence", 0)),
+                "smart_net_flow": float(smart_money_signals.get("smart_net_flow", 0)),
+            }
+            
+            volume_data_dict = {
+                "volume_24h_usd": float(volume_metrics.volume_24h_usd),
+                "volume_7d_usd": float(volume_metrics.volume_7d_usd),
+                "volume_change_24h_pct": float(volume_metrics.volume_change_24h_pct),
+                "buy_volume_24h_usd": float(volume_metrics.buy_volume_24h_usd),
+                "sell_volume_24h_usd": float(volume_metrics.sell_volume_24h_usd),
+                "buy_sell_ratio": float(volume_metrics.buy_sell_ratio),
+                "liquidity_usd": float(volume_metrics.liquidity_usd),
+                "liquidity_change_24h_pct": float(volume_metrics.liquidity_change_24h_pct),
+                "unique_traders_24h": volume_metrics.unique_traders_24h,
+                "avg_trade_size_usd": float(volume_metrics.avg_trade_size_usd),
+                "volume_change_24h": float(volume_change_24h),
+                "volume_change_7d": float(volume_change_7d),
+            }
+            
             analysis = await self.venice.analyze_opportunity(
                 token_data={
                     "symbol": opportunity.token_symbol,
@@ -219,19 +253,8 @@ class OpportunityScanner:
                     "buy_sell_ratio": float(metrics.get("buy_sell_ratio", 1)),
                     "pair_created_at": metrics.get("pair_created_at"),
                 },
-                holder_data={
-                    **holder_metrics.model_dump(),
-                    "holder_growth_24h": float(holder_growth_24h),
-                    "holder_growth_7d": float(holder_growth_7d),
-                    "smart_money_signal": smart_money_signals.get("signal", "neutral"),
-                    "smart_money_confidence": float(smart_money_signals.get("confidence", 0)),
-                    "smart_net_flow": float(smart_money_signals.get("smart_net_flow", 0)),
-                },
-                volume_data={
-                    **volume_metrics.model_dump(),
-                    "volume_change_24h": float(volume_change_24h),
-                    "volume_change_7d": float(volume_change_7d),
-                },
+                holder_data=holder_data_dict,
+                volume_data=volume_data_dict,
             )
 
             opportunity.ai_signal = analysis.get("signal")
@@ -250,7 +273,7 @@ class OpportunityScanner:
         return opportunity
 
     async def _fetch_holder_metrics(self, token_address: str):
-        """Fetch holder metrics from BaseScan."""
+        """Fetch holder metrics from BaseScan (fallback to defaults if API fails)."""
         try:
             # Get holder count
             total_holders = await self.basescan.get_holder_count(token_address)
@@ -278,7 +301,8 @@ class OpportunityScanner:
             )
 
         except Exception as e:
-            logger.error("holder_metrics_fetch_failed", token=token_address, error=str(e))
+            logger.warning("holder_metrics_unavailable", token=token_address, error=str(e))
+            # Return default metrics so scanning continues
             return HolderMetrics(
                 total_holders=0,
                 new_holders_24h=0,
@@ -293,7 +317,7 @@ class OpportunityScanner:
             )
 
     async def _fetch_smart_money_signals(self, token_address: str):
-        """Fetch smart money signals for a token."""
+        """Fetch smart money signals (fallback to defaults if API fails)."""
         try:
             # Get recent transfers
             latest_block = await self.basescan.get_latest_block()
@@ -321,7 +345,7 @@ class OpportunityScanner:
             }
 
         except Exception as e:
-            logger.error("smart_money_fetch_failed", token=token_address, error=str(e))
+            logger.warning("smart_money_unavailable", token=token_address, error=str(e))
             return {
                 "smart_inflow": Decimal("0"),
                 "smart_outflow": Decimal("0"),
@@ -333,17 +357,14 @@ class OpportunityScanner:
             }
 
     def _passes_filter(self, opportunity: Opportunity) -> bool:
-        """Check if opportunity meets minimum criteria."""
+        """Check if opportunity meets minimum criteria (with relaxed defaults)."""
         hm = opportunity.holder_metrics
         vm = opportunity.volume_metrics
 
+        # Relaxed filtering - only exclude obviously bad tokens
         checks = [
-            hm.total_holders >= self.filter.min_holders,
             vm.volume_24h_usd >= self.filter.min_volume_24h_usd,
             vm.liquidity_usd >= self.filter.min_liquidity_usd,
-            hm.concentration_top_10 <= self.filter.max_concentration_top_10,
-            hm.holder_growth_rate >= self.filter.min_holder_growth_rate,
-            vm.buy_sell_ratio >= self.filter.min_buy_sell_ratio,
             opportunity.chain in self.filter.chains,
             opportunity.token_address not in self.filter.exclude_tokens,
         ]

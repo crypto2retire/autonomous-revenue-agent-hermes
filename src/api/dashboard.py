@@ -363,9 +363,10 @@ DASHBOARD_HTML = """
         <div id="opportunities" class="tab-content">
             <div class="card">
                 <h2>Latest Opportunities</h2>
+                <button class="btn" onclick="fetchOpportunities()" style="margin-bottom: 15px;">Scan Now</button>
                 <div id="opportunities-list">
                     <div class="opportunity-row">
-                        <span style="color: #6b7b8f;">Scanning for opportunities...</span>
+                        <span style="color: #6b7b8f;">Click "Scan Now" to discover opportunities</span>
                     </div>
                 </div>
             </div>
@@ -488,6 +489,44 @@ DASHBOARD_HTML = """
             }
         }
 
+        // Fetch opportunities
+        async function fetchOpportunities() {
+            const container = document.getElementById('opportunities-list');
+            container.innerHTML = '<div class="opportunity-row"><span style="color: #6b7b8f;">Scanning...</span></div>';
+            
+            try {
+                const res = await fetch('/opportunities');
+                const data = await res.json();
+                
+                if (data.error) {
+                    container.innerHTML = `<div class="opportunity-row"><span style="color: #ff4444;">Error: ${data.error}</span></div>`;
+                    return;
+                }
+                
+                if (data.count === 0) {
+                    container.innerHTML = '<div class="opportunity-row"><span style="color: #6b7b8f;">No opportunities found yet. Try again in a few minutes.</span></div>';
+                    return;
+                }
+                
+                container.innerHTML = data.opportunities.map(opp => `
+                    <div class="opportunity-row">
+                        <div>
+                            <div class="opportunity-token">${opp.token_symbol} <span style="color: #6b7b8f; font-size: 11px;">${opp.chain}</span></div>
+                            <div style="font-size: 11px; color: #6b7b8f; margin-top: 2px;">$${opp.current_price_usd?.toFixed(8) || '0'} | Vol: $${opp.volume_24h_usd?.toLocaleString() || '0'}</div>
+                        </div>
+                        <div style="text-align: right;">
+                            <span class="opportunity-signal signal-${opp.ai_signal}">${opp.ai_signal?.toUpperCase() || 'UNKNOWN'}</span>
+                            <div style="font-size: 11px; color: #6b7b8f; margin-top: 2px;">${opp.ai_confidence ? (opp.ai_confidence * 100).toFixed(0) + '%' : ''} confidence</div>
+                        </div>
+                    </div>
+                `).join('');
+                
+                document.getElementById('opportunity-count').textContent = data.count;
+            } catch (e) {
+                container.innerHTML = `<div class="opportunity-row"><span style="color: #ff4444;">Error: ${e.message}</span></div>`;
+            }
+        }
+
         // Auto-refresh
         refreshStatus();
         setInterval(refreshStatus, 30000);
@@ -598,6 +637,58 @@ async def get_token_balance(token_address: str):
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/opportunities")
+async def get_opportunities():
+    """Get latest discovered opportunities."""
+    try:
+        # Import scanner to get latest opportunities
+        from src.opportunity import OpportunityScanner
+        from src.venice import VeniceClient
+        
+        venice = VeniceClient()
+        scanner = OpportunityScanner(venice)
+        opportunities = await scanner.scan()
+        
+        # Convert to JSON-serializable format
+        results = []
+        for opp in opportunities:
+            results.append({
+                "id": opp.id,
+                "token_address": opp.token_address,
+                "token_symbol": opp.token_symbol,
+                "token_name": opp.token_name,
+                "chain": opp.chain,
+                "current_price_usd": float(opp.current_price_usd),
+                "price_change_24h_pct": float(opp.price_change_24h_pct),
+                "market_cap_usd": float(opp.market_cap_usd) if opp.market_cap_usd else None,
+                "ai_signal": opp.ai_signal,
+                "ai_confidence": float(opp.ai_confidence) if opp.ai_confidence else None,
+                "ai_risk_level": opp.ai_risk_level,
+                "status": opp.status.value,
+                "discovered_at": opp.discovered_at.isoformat() if opp.discovered_at else None,
+                "volume_24h_usd": float(opp.volume_metrics.volume_24h_usd) if opp.volume_metrics else None,
+                "liquidity_usd": float(opp.volume_metrics.liquidity_usd) if opp.volume_metrics else None,
+                "buy_sell_ratio": float(opp.volume_metrics.buy_sell_ratio) if opp.volume_metrics else None,
+                "total_holders": opp.holder_metrics.total_holders if opp.holder_metrics else None,
+            })
+        
+        await scanner.close()
+        
+        return {
+            "opportunities": results,
+            "count": len(results),
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        logger.error("opportunities_fetch_failed", error=str(e))
+        return {
+            "opportunities": [],
+            "count": 0,
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat(),
+        }
 
 
 @app.get("/health")
