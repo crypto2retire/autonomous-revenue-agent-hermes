@@ -15,6 +15,7 @@ from src.opportunity.models import (
 from src.data.dexscreener import DexScreenerClient
 from src.data.basescan import BaseScanClient
 from src.data.historical import HistoricalTracker
+from src.data.smart_money import SmartMoneyTracker
 from src.venice import VeniceClient
 from src.utils.logger import get_logger
 
@@ -30,12 +31,14 @@ class OpportunityScanner:
         dexscreener=None,
         basescan=None,
         historical=None,
+        smart_money=None,
         filter_criteria=None,
     ):
         self.venice = venice_client
         self.dexscreener = dexscreener or DexScreenerClient()
         self.basescan = basescan or BaseScanClient()
         self.historical = historical or HistoricalTracker()
+        self.smart_money = smart_money or SmartMoneyTracker()
         self.filter = filter_criteria or OpportunityFilter()
         self._running = False
 
@@ -143,6 +146,9 @@ class OpportunityScanner:
         # Fetch BaseScan holder data
         holder_metrics = await self._fetch_holder_metrics(token_address)
 
+        # Fetch smart money flows
+        smart_money_signals = await self._fetch_smart_money_signals(token_address)
+
         # Build volume metrics from DexScreener
         volume_metrics = VolumeMetrics(
             volume_24h_usd=metrics.get("volume_24h", Decimal("0")),
@@ -178,8 +184,10 @@ class OpportunityScanner:
         volume_change_24h = await self.historical.get_volume_change(token_address, hours=24)
         volume_change_7d = await self.historical.get_volume_change(token_address, hours=168)
 
-        # Update metrics with historical data
+        # Update metrics with historical and smart money data
         holder_metrics.holder_growth_rate = holder_growth_24h
+        holder_metrics.smart_money_inflows_24h = smart_money_signals.get("smart_inflow", Decimal("0"))
+        holder_metrics.smart_money_outflows_24h = smart_money_signals.get("smart_outflow", Decimal("0"))
         volume_metrics.volume_change_24h_pct = volume_change_24h
 
         # Create opportunity
@@ -215,6 +223,9 @@ class OpportunityScanner:
                     **holder_metrics.model_dump(),
                     "holder_growth_24h": float(holder_growth_24h),
                     "holder_growth_7d": float(holder_growth_7d),
+                    "smart_money_signal": smart_money_signals.get("signal", "neutral"),
+                    "smart_money_confidence": float(smart_money_signals.get("confidence", 0)),
+                    "smart_net_flow": float(smart_money_signals.get("smart_net_flow", 0)),
                 },
                 volume_data={
                     **volume_metrics.model_dump(),
@@ -238,7 +249,7 @@ class OpportunityScanner:
 
         return opportunity
 
-    async def _fetch_holder_metrics(self, token_address: str) -> HolderMetrics:
+    async def _fetch_holder_metrics(self, token_address: str):
         """Fetch holder metrics from BaseScan."""
         try:
             # Get holder count
@@ -260,10 +271,10 @@ class OpportunityScanner:
                 active_holders_24h=0,
                 concentration_top_10=Decimal(str(concentration.get("top_10_pct", 0))),
                 concentration_top_50=Decimal(str(concentration.get("top_50_pct", 0))),
-                smart_money_inflows_24h=Decimal("0"),  # Would need smart money labels
+                smart_money_inflows_24h=Decimal("0"),  # Will be populated by smart money tracker
                 smart_money_outflows_24h=Decimal("0"),
                 avg_hold_time_days=Decimal("0"),
-                holder_growth_rate=Decimal("0"),  # Would need historical data
+                holder_growth_rate=Decimal("0"),  # Will be populated by historical tracker
             )
 
         except Exception as e:
@@ -280,6 +291,46 @@ class OpportunityScanner:
                 avg_hold_time_days=Decimal("0"),
                 holder_growth_rate=Decimal("0"),
             )
+
+    async def _fetch_smart_money_signals(self, token_address: str):
+        """Fetch smart money signals for a token."""
+        try:
+            # Get recent transfers
+            latest_block = await self.basescan.get_latest_block()
+            start_block = latest_block - 10000  # Approx 24h of blocks
+
+            transfers = await self.basescan.get_token_transfers(
+                token_address,
+                start_block=start_block,
+                end_block=latest_block,
+                offset=100,
+            )
+
+            # Analyze for smart money
+            flows = await self.smart_money.analyze_token_flows(token_address, transfers)
+            signals = await self.smart_money.get_smart_money_signals(token_address)
+
+            return {
+                "smart_inflow": Decimal(str(flows.get("smart_inflow_24h", 0))),
+                "smart_outflow": Decimal(str(flows.get("smart_outflow_24h", 0))),
+                "smart_net_flow": Decimal(str(flows.get("smart_net_flow", 0))),
+                "smart_buyers": flows.get("smart_buyers", 0),
+                "smart_sellers": flows.get("smart_sellers", 0),
+                "signal": signals.get("signal", "neutral"),
+                "confidence": Decimal(str(signals.get("confidence", 0))),
+            }
+
+        except Exception as e:
+            logger.error("smart_money_fetch_failed", token=token_address, error=str(e))
+            return {
+                "smart_inflow": Decimal("0"),
+                "smart_outflow": Decimal("0"),
+                "smart_net_flow": Decimal("0"),
+                "smart_buyers": 0,
+                "smart_sellers": 0,
+                "signal": "neutral",
+                "confidence": Decimal("0"),
+            }
 
     def _passes_filter(self, opportunity: Opportunity) -> bool:
         """Check if opportunity meets minimum criteria."""
@@ -330,3 +381,4 @@ class OpportunityScanner:
         await self.dexscreener.close()
         await self.basescan.close()
         await self.historical.close()
+        await self.smart_money.close()

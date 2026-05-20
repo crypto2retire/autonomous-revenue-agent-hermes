@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     database_url: SecretStr = Field(..., description="PostgreSQL connection string")
     redis_url: str = "redis://localhost:6379/0"
 
+    # Dune Analytics
+    dune_api_key: SecretStr = Field(default=SecretStr(""), description="Dune Analytics API key")
+
+    # Nansen
+    nansen_api_key: SecretStr = Field(default=SecretStr(""), description="Nansen API key")
+
     # BaseScan
     basescan_api_key: SecretStr = Field(default=SecretStr(""), description="BaseScan API key")
 
