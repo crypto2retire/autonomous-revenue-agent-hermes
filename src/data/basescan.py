@@ -1,4 +1,4 @@
-"""BaseScan API client for on-chain data."""
+"""BaseScan API client for on-chain data (Etherscan API V2)."""
 
 import httpx
 from decimal import Decimal
@@ -11,13 +11,15 @@ logger = get_logger(__name__)
 
 
 class BaseScanClient:
-    """Client for BaseScan API (free API key required).
+    """Client for BaseScan API via Etherscan API V2 (free API key required).
 
     Provides: holder counts, transfers, token supply, contract data.
     Rate limit: 5 calls/sec with valid API key.
     """
 
-    BASE_URL = "https://api.basescan.org/api"
+    # Etherscan API V2 unified endpoint
+    BASE_URL = "https://api.etherscan.io/v2/api"
+    CHAIN_ID = 8453  # Base chain ID
 
     def __init__(self, api_key: str | None = None):
         self.api_key = api_key or getattr(settings, 'basescan_api_key', None)
@@ -29,8 +31,9 @@ class BaseScanClient:
         )
 
     async def _make_request(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Make authenticated request to BaseScan API."""
+        """Make authenticated request to BaseScan API V2."""
         params["apikey"] = self.api_key
+        params["chainid"] = self.CHAIN_ID
 
         try:
             response = await self.client.get("", params=params)

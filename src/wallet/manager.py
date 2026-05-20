@@ -69,12 +69,10 @@ class WalletManager:
         """Get current wallet."""
         return self._wallet
 
-    @property
-    def address(self) -> Optional[str]:
+    def get_address(self) -> Optional[str]:
         """Get wallet address."""
         return self._wallet.address if self._wallet else None
 
-    @property
     def is_configured(self) -> bool:
         """Check if wallet is configured."""
         return self._wallet is not None
@@ -185,7 +183,7 @@ class WalletManager:
             logger.error("balance_check_failed", error=str(e))
             return Decimal("0")
 
-    def reload(self):
+    def reload_wallet(self):
         """Reload wallet from config file."""
         logger.info("wallet_reload_requested")
         self._load_wallet()
