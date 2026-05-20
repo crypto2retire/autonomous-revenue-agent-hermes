@@ -53,6 +53,16 @@ class AgentStatus(BaseModel):
     version: str = "1.0.0"
 
 
+class ModeUpdateRequest(BaseModel):
+    mode: str = Field(..., description="Agent mode: paper or live")
+
+
+class ModeUpdateResponse(BaseModel):
+    success: bool
+    mode: str
+    message: str
+
+
 # --- HTML Dashboard ---
 
 DASHBOARD_HTML = """
@@ -264,7 +274,7 @@ DASHBOARD_HTML = """
                     </div>
                     <div class="metric">
                         <span class="metric-label">Mode</span>
-                        <span class="status-badge status-paper">Paper Trading</span>
+                        <span class="status-badge status-paper" id="mode-badge">Paper Trading</span>
                     </div>
                     <div class="metric">
                         <span class="metric-label">Version</span>
@@ -315,7 +325,7 @@ DASHBOARD_HTML = """
                 <div class="card">
                     <h2>Quick Actions</h2>
                     <button class="btn" onclick="refreshStatus()">Refresh Status</button>
-                    <button class="btn btn-secondary" onclick="switchMode()">Switch to Live Mode</button>
+                    <button class="btn btn-secondary" id="mode-btn" onclick="switchMode()">Switch to Live Mode</button>
                     <button class="btn btn-secondary" onclick="location.reload()">Reload Dashboard</button>
                 </div>
             </div>
@@ -388,6 +398,16 @@ DASHBOARD_HTML = """
                 const data = await res.json();
                 document.getElementById('wallet-address').textContent = data.wallet_address ? data.wallet_address.slice(0, 10) + '...' + data.wallet_address.slice(-6) : '--';
                 document.getElementById('current-address').textContent = data.wallet_address || 'Not configured';
+                
+                // Update mode badge
+                const modeBadge = document.getElementById('mode-badge');
+                if (data.mode === 'live') {
+                    modeBadge.textContent = 'LIVE TRADING';
+                    modeBadge.className = 'status-badge status-live';
+                } else {
+                    modeBadge.textContent = 'Paper Trading';
+                    modeBadge.className = 'status-badge status-paper';
+                }
             } catch (e) {
                 console.error('Failed to fetch status:', e);
             }
@@ -443,8 +463,29 @@ DASHBOARD_HTML = """
 
         // Switch mode
         async function switchMode() {
-            if (!confirm('Switch to LIVE mode? This will use real funds.')) return;
-            alert('Mode switch not yet implemented via API');
+            const isLive = document.getElementById('mode-badge').textContent === 'LIVE TRADING';
+            const newMode = isLive ? 'paper' : 'live';
+            const confirmMsg = isLive 
+                ? 'Switch to PAPER mode? This will stop using real funds.' 
+                : 'Switch to LIVE mode? This will use REAL FUNDS for trading!';
+            
+            if (!confirm(confirmMsg)) return;
+            
+            try {
+                const res = await fetch('/mode', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode: newMode })
+                });
+                const data = await res.json();
+                alert(data.message);
+                if (data.success) {
+                    document.getElementById('mode-btn').textContent = isLive ? 'Switch to Live Mode' : 'Switch to Paper Mode';
+                    refreshStatus();
+                }
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
         }
 
         // Auto-refresh
@@ -563,3 +604,36 @@ async def get_token_balance(token_address: str):
 async def health_check():
     """Health check endpoint for Fly.io."""
     return {"status": "healthy"}
+
+
+@app.post("/mode", response_model=ModeUpdateResponse)
+async def update_mode(request: ModeUpdateRequest):
+    """Switch agent between paper and live trading mode."""
+    if request.mode not in ("paper", "live"):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid mode. Must be 'paper' or 'live'"
+        )
+
+    try:
+        # Update settings
+        settings.agent_mode = request.mode
+
+        # Update environment variable for persistence
+        import os
+        os.environ["AGENT_MODE"] = request.mode
+
+        logger.critical(
+            "agent_mode_changed",
+            mode=request.mode,
+            wallet=wallet_manager.get_address(),
+        )
+
+        return ModeUpdateResponse(
+            success=True,
+            mode=request.mode,
+            message=f"Agent switched to {request.mode.upper()} mode. "
+                    + ("REAL FUNDS WILL BE USED!" if request.mode == "live" else "Simulated trading only."),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
