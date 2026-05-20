@@ -42,6 +42,10 @@ class DexScreenerClient:
             response.raise_for_status()
             data = response.json()
 
+            # Handle list response (token-pairs returns list directly)
+            if isinstance(data, list):
+                data = {"pairs": data}
+
             logger.debug(
                 "dexscreener_token_pairs_fetched",
                 chain=chain,
