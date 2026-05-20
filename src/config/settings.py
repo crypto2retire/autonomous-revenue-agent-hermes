@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     # Nansen
     nansen_api_key: SecretStr = Field(default=SecretStr(""), description="Nansen API key")
 
+    # Odos Protocol
+    odos_api_key: SecretStr = Field(default=SecretStr(""), description="Odos Protocol API key")
+
     # BaseScan
     basescan_api_key: SecretStr = Field(default=SecretStr(""), description="BaseScan API key")
 
