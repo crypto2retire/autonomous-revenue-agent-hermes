@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     basescan_api_key: SecretStr = Field(default=SecretStr(""), description="BaseScan API key")
 
     # WhatShouldICharge Integration
-    wsic_api_key: SecretStr = Field(..., description="WhatShouldICharge API key")
+    wsic_api_key: SecretStr = Field(default=SecretStr(""), description="WhatShouldICharge API key")
     wsic_base_url: str = "https://api.whatshouldicharge.app"
 
     # Fly.io
@@ -49,7 +49,7 @@ class Settings(BaseSettings):
 
     # Agent Identity
     agent_name: str = "RevenueSeeker"
-    agent_mode: str = "live"  # live, paper, or maintenance
+    agent_mode: str = Field(default="paper", description="Agent mode: paper, live, or maintenance")
 
     # Trading Limits
     max_trade_size_usd: Decimal = Field(default=Decimal("100.00"))

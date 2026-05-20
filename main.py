@@ -5,13 +5,22 @@ import signal
 import sys
 
 from src.survival import SurvivalLoop
+from src.api.dashboard import app
 from src.utils.logger import configure_logging, get_logger
 
 logger = get_logger(__name__)
 
 
+async def run_dashboard(host="0.0.0.0", port=8000):
+    """Run FastAPI dashboard server."""
+    import uvicorn
+    config = uvicorn.Config(app, host=host, port=port, log_level="info")
+    server = uvicorn.Server(config)
+    await server.serve()
+
+
 async def main():
-    """Main entry point."""
+    """Main entry point — runs survival loop + dashboard concurrently."""
     configure_logging()
     logger.info("starting_autonomous_revenue_agent")
 
@@ -26,7 +35,12 @@ async def main():
     signal.signal(signal.SIGTERM, signal_handler)
 
     try:
-        await agent.start()
+        # Run survival loop and dashboard concurrently
+        await asyncio.gather(
+            agent.start(),
+            run_dashboard(),
+            return_exceptions=True,
+        )
     except Exception as e:
         logger.error("agent_fatal_error", error=str(e))
         sys.exit(1)
