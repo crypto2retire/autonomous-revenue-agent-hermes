@@ -26,19 +26,30 @@ async def health():
 @app.get("/api/coins")
 async def get_coins(
     signal: Optional[str] = None,
-    tags: Optional[str] = None,
-    watching: Optional[bool] = None,
-    min_change: Optional[float] = None,
+    min_score: Optional[float] = None,
     limit: int = Query(100, ge=1, le=500),
 ):
-    coins = await DB.get_coins(
+    coins = await DB.get_all_coins(
         signal=signal,
-        tags=tags,
-        is_watching=watching,
-        min_price_change=min_change,
+        min_score=min_score,
         limit=limit,
     )
-    stats = await DB.get_coin_stats()
+    # Build stats
+    total = len(coins)
+    buy_signals = sum(1 for c in coins if c.signal == "buy")
+    sell_signals = sum(1 for c in coins if c.signal == "sell")
+    bullish = sum(1 for c in coins if c.signal == "bullish")
+    bearish = sum(1 for c in coins if c.signal == "bearish")
+    top_gainer = max((c.price_change_pct for c in coins if c.price_change_pct is not None), default=0)
+    
+    stats = {
+        "total_coins": total,
+        "buy_signals": buy_signals,
+        "sell_signals": sell_signals,
+        "bullish_signals": bullish,
+        "bearish_signals": bearish,
+        "top_gainer_pct": top_gainer,
+    }
     return {
         "coins": [c.to_dict() for c in coins],
         "stats": stats,
@@ -48,21 +59,26 @@ async def get_coins(
 
 @app.get("/api/coins/gainers")
 async def get_gainers(limit: int = 20):
-    coins = await DB.get_coins(min_price_change=5.0, limit=limit)
-    return {"coins": [c.to_dict() for c in coins]}
+    coins = await DB.get_all_coins(limit=500)
+    gainers = [c for c in coins if c.price_change_pct is not None and float(c.price_change_pct) > 5]
+    gainers.sort(key=lambda x: float(x.price_change_pct or 0), reverse=True)
+    return {"coins": [c.to_dict() for c in gainers[:limit]]}
 
 
 @app.get("/api/coins/losers")
 async def get_losers(limit: int = 20):
-    coins = await DB.get_coins(min_price_change=-100.0, limit=limit)
+    coins = await DB.get_all_coins(limit=500)
     losers = [c for c in coins if c.price_change_pct is not None and float(c.price_change_pct) < -5]
+    losers.sort(key=lambda x: float(x.price_change_pct or 0))
     return {"coins": [c.to_dict() for c in losers[:limit]]}
 
 
 @app.get("/api/coins/trending")
 async def get_trending(limit: int = 20):
-    coins = await DB.get_coins(tags="trending", limit=limit)
-    return {"coins": [c.to_dict() for c in coins]}
+    coins = await DB.get_all_coins(limit=500)
+    # Sort by scan count (most scanned = trending)
+    trending = sorted(coins, key=lambda x: x.scan_count, reverse=True)
+    return {"coins": [c.to_dict() for c in trending[:limit]]}
 
 
 # ── Trades ─────────────────────────────────────────────────────────
@@ -76,9 +92,9 @@ async def get_trades(status: Optional[str] = None, limit: int = 100):
 # ── Performance ────────────────────────────────────────────────────
 
 @app.get("/api/performance")
-async def get_performance(days: int = 7):
-    metrics = await DB.get_performance(days=days)
-    return {"metrics": [m.to_dict() for m in metrics]}
+async def get_performance(hours: int = 24):
+    summary = await DB.get_performance_summary(hours=hours)
+    return {"summary": summary}
 
 
 # ── Logs ───────────────────────────────────────────────────────────
@@ -146,6 +162,9 @@ async def dashboard():
         .badge-sell { background: #7f1d1d; color: #f87171; }
         .badge-hold { background: #1e3a5f; color: #60a5fa; }
         .badge-avoid { background: #4b5563; color: #9ca3af; }
+        .badge-bullish { background: #064e3b; color: #34d399; }
+        .badge-bearish { background: #7f1d1d; color: #f87171; }
+        .badge-neutral { background: #4b5563; color: #9ca3af; }
         .positive { color: #34d399; }
         .negative { color: #f87171; }
         .refresh-bar {
@@ -193,14 +212,10 @@ async def dashboard():
                     <option value="">All Signals</option>
                     <option value="buy">Buy</option>
                     <option value="sell">Sell</option>
+                    <option value="bullish">Bullish</option>
+                    <option value="bearish">Bearish</option>
                     <option value="hold">Hold</option>
                     <option value="avoid">Avoid</option>
-                </select>
-                <select id="tag-filter" onchange="loadWatchlist()">
-                    <option value="">All Tags</option>
-                    <option value="trending">Trending</option>
-                    <option value="gainer">Gainers</option>
-                    <option value="new">New</option>
                 </select>
             </div>
             <table>
@@ -210,9 +225,7 @@ async def dashboard():
                         <th>Signal</th>
                         <th>Price</th>
                         <th>Change</th>
-                        <th>Volume</th>
-                        <th>Liquidity</th>
-                        <th>Confidence</th>
+                        <th>AI Score</th>
                         <th>Scans</th>
                         <th>Last Seen</th>
                     </tr>
@@ -230,14 +243,13 @@ async def dashboard():
             <table>
                 <thead>
                     <tr>
-                        <th>Trade ID</th>
                         <th>Symbol</th>
                         <th>Side</th>
-                        <th>Status</th>
                         <th>Amount</th>
-                        <th>Entry</th>
-                        <th>PnL</th>
-                        <th>Signal</th>
+                        <th>Price</th>
+                        <th>Total</th>
+                        <th>Type</th>
+                        <th>Status</th>
                         <th>Created</th>
                     </tr>
                 </thead>
@@ -248,24 +260,10 @@ async def dashboard():
         <!-- Performance Panel -->
         <div class="panel" id="performance-panel">
             <div class="refresh-bar">
-                <span>Last 7 days</span>
+                <span>Performance Summary</span>
                 <button class="btn" onclick="loadPerformance()">Refresh</button>
             </div>
-            <div id="performance-chart"></div>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Period</th>
-                        <th>Trades</th>
-                        <th>Wins</th>
-                        <th>Losses</th>
-                        <th>Win Rate</th>
-                        <th>Total PnL</th>
-                        <th>Avg Size</th>
-                    </tr>
-                </thead>
-                <tbody id="performance-body"></tbody>
-            </table>
+            <div class="stats-grid" id="performance-stats"></div>
         </div>
 
         <!-- Logs Panel -->
@@ -281,7 +279,6 @@ async def dashboard():
                         <th>Level</th>
                         <th>Event</th>
                         <th>Message</th>
-                        <th>Symbol</th>
                     </tr>
                 </thead>
                 <tbody id="logs-body"></tbody>
@@ -327,10 +324,8 @@ async def dashboard():
 
         async function loadWatchlist() {
             const signal = document.getElementById('signal-filter').value;
-            const tags = document.getElementById('tag-filter').value;
             let url = '/api/coins?limit=200';
             if (signal) url += '&signal=' + signal;
-            if (tags) url += '&tags=' + tags;
 
             const res = await fetch(url);
             const data = await res.json();
@@ -340,9 +335,9 @@ async def dashboard():
             const stats = data.stats;
             document.getElementById('watchlist-stats').innerHTML = `
                 <div class="stat-card"><div class="stat-value">${stats.total_coins || 0}</div><div class="stat-label">Total Coins</div></div>
-                <div class="stat-card"><div class="stat-value">${stats.watching || 0}</div><div class="stat-label">Watching</div></div>
                 <div class="stat-card"><div class="stat-value">${stats.buy_signals || 0}</div><div class="stat-label">Buy Signals</div></div>
-                <div class="stat-card"><div class="stat-value">${fmtPct(stats.top_gainer_pct)}</div><div class="stat-label">Top Gainer</div></div>
+                <div class="stat-card"><div class="stat-value">${stats.bullish_signals || 0}</div><div class="stat-label">Bullish</div></div>
+                <div class="stat-card"><div class="stat-value">${stats.bearish_signals || 0}</div><div class="stat-label">Bearish</div></div>
             `;
 
             const tbody = document.getElementById('watchlist-body');
@@ -350,13 +345,11 @@ async def dashboard():
                 <tr>
                     <td><strong>${c.symbol}</strong><br><small style="color:#8892a0">${c.name || ''}</small></td>
                     <td><span class="badge badge-${c.signal}">${c.signal?.toUpperCase()}</span></td>
-                    <td>${fmtNum(c.last_price_usd, 6)}</td>
+                    <td>${fmtNum(c.current_price || c.price_at_discovery, 6)}</td>
                     <td>${fmtPct(c.price_change_pct)}</td>
-                    <td>${fmtNum(c.volume_24h)}</td>
-                    <td>${fmtNum(c.liquidity_usd)}</td>
-                    <td>${(c.confidence * 100).toFixed(0)}%</td>
+                    <td>${(c.ai_score * 100).toFixed(0)}%</td>
                     <td>${c.scan_count}</td>
-                    <td>${timeAgo(c.last_seen_at)}</td>
+                    <td>${timeAgo(c.last_updated)}</td>
                 </tr>
             `).join('');
         }
@@ -368,33 +361,30 @@ async def dashboard():
 
             document.getElementById('trades-body').innerHTML = data.trades.map(t => `
                 <tr>
-                    <td><code>${t.trade_id}</code></td>
                     <td>${t.symbol}</td>
                     <td>${t.side?.toUpperCase()}</td>
-                    <td><span class="badge badge-${t.status === 'executed' ? 'buy' : t.status === 'closed' ? 'hold' : 'avoid'}">${t.status}</span></td>
-                    <td>${fmtNum(t.amount_usd)}</td>
-                    <td>${fmtNum(t.entry_price, 6)}</td>
-                    <td>${fmtPct(t.pnl_pct)}</td>
-                    <td><span class="badge badge-${t.signal}">${t.signal?.toUpperCase()}</span></td>
+                    <td>${fmtNum(t.amount)}</td>
+                    <td>${fmtNum(t.price, 6)}</td>
+                    <td>${fmtNum(t.total_value)}</td>
+                    <td>${t.trade_type}</td>
+                    <td><span class="badge badge-${t.status === 'completed' ? 'buy' : 'avoid'}">${t.status}</span></td>
                     <td>${timeAgo(t.created_at)}</td>
                 </tr>
             `).join('');
         }
 
         async function loadPerformance() {
-            const res = await fetch('/api/performance?days=7');
+            const res = await fetch('/api/performance?hours=24');
             const data = await res.json();
-            document.getElementById('performance-body').innerHTML = data.metrics.map(m => `
-                <tr>
-                    <td>${m.period}</td>
-                    <td>${m.trades_count}</td>
-                    <td class="positive">${m.winning_trades}</td>
-                    <td class="negative">${m.losing_trades}</td>
-                    <td>${(m.win_rate * 100).toFixed(1)}%</td>
-                    <td>${fmtNum(m.total_pnl_usd)}</td>
-                    <td>${fmtNum(m.avg_trade_size)}</td>
-                </tr>
-            `).join('');
+            const s = data.summary;
+            document.getElementById('performance-stats').innerHTML = `
+                <div class="stat-card"><div class="stat-value">${fmtNum(s.current_balance)}</div><div class="stat-label">Current Balance</div></div>
+                <div class="stat-card"><div class="stat-value">${s.total_trades || 0}</div><div class="stat-label">Total Trades</div></div>
+                <div class="stat-card"><div class="stat-value">${s.buy_trades || 0}</div><div class="stat-label">Buys</div></div>
+                <div class="stat-card"><div class="stat-value">${s.sell_trades || 0}</div><div class="stat-label">Sells</div></div>
+                <div class="stat-card"><div class="stat-value">${fmtNum(s.total_volume)}</div><div class="stat-label">Total Volume</div></div>
+                <div class="stat-card"><div class="stat-value">${s.total_coins_scanned || 0}</div><div class="stat-label">Coins Scanned</div></div>
+            `;
         }
 
         async function loadLogs() {
@@ -408,7 +398,6 @@ async def dashboard():
                     <td><span class="badge badge-${l.level === 'error' ? 'sell' : l.level === 'warning' ? 'hold' : 'buy'}">${l.level}</span></td>
                     <td>${l.event}</td>
                     <td>${l.message}</td>
-                    <td>${l.symbol || '-'}</td>
                 </tr>
             `).join('');
         }
