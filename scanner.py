@@ -93,7 +93,7 @@ Respond ONLY with valid JSON."""
                     "model": settings.venice_model,
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.2,
-                    "max_tokens": 500,
+                    "max_tokens": 800,
                 },
             )
             resp.raise_for_status()
