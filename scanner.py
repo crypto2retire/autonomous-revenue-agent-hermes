@@ -113,7 +113,18 @@ Respond ONLY with valid JSON."""
                         content = part
                         break
 
-            analysis = json.loads(content.strip())
+            # Try to find JSON object in the content
+            try:
+                analysis = json.loads(content.strip())
+            except json.JSONDecodeError:
+                # Try to extract JSON using regex
+                import re
+                json_match = re.search(r'\{[\s\S]*\}', content)
+                if json_match:
+                    analysis = json.loads(json_match.group())
+                else:
+                    raise
+
             return {
                 "signal": analysis.get("signal", "avoid").lower(),
                 "confidence": float(analysis.get("confidence", 0)),
