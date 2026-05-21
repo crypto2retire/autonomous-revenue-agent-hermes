@@ -101,10 +101,17 @@ Respond ONLY with valid JSON."""
             content = data["choices"][0]["message"]["content"]
 
             # Extract JSON from markdown if needed
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0]
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0]
+            content = content.strip()
+            if "```" in content:
+                # Extract content between code fences
+                parts = content.split("```")
+                for part in parts:
+                    part = part.strip()
+                    if part.startswith("json"):
+                        part = part[4:].strip()
+                    if part and part.startswith("{"):
+                        content = part
+                        break
 
             analysis = json.loads(content.strip())
             return {
