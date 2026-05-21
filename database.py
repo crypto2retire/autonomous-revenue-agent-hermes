@@ -63,10 +63,11 @@ class DB:
                 token_address=token_address,
                 symbol=symbol,
                 name=name,
-                price_at_discovery=price_at_discovery,
-                ai_score=ai_score,
+                first_price_usd=price_at_discovery,
+                last_price_usd=price_at_discovery,
+                confidence=ai_score,
                 signal=signal,
-                metadata=metadata or {},
+                ai_analysis=str(metadata) if metadata else None,
             )
             session.add(coin)
             await session.commit()
@@ -90,12 +91,12 @@ class DB:
     ) -> List[CoinWatch]:
         """Get coins with optional filtering."""
         async with async_session() as session:
-            query = select(CoinWatch).order_by(desc(CoinWatch.ai_score))
+            query = select(CoinWatch).order_by(desc(CoinWatch.confidence))
 
             if signal:
                 query = query.where(CoinWatch.signal == signal)
             if min_score is not None:
-                query = query.where(CoinWatch.ai_score >= min_score)
+                query = query.where(CoinWatch.confidence >= min_score)
 
             query = query.limit(limit)
             result = await session.execute(query)
@@ -110,13 +111,13 @@ class DB:
             )
             coin = result.scalar_one_or_none()
             if coin:
-                coin.current_price = current_price
-                if coin.price_at_discovery > 0:
+                coin.last_price_usd = current_price
+                if coin.first_price_usd and float(coin.first_price_usd) > 0:
                     coin.price_change_pct = (
-                        (current_price - coin.price_at_discovery)
-                        / coin.price_at_discovery
+                        (current_price - float(coin.first_price_usd))
+                        / float(coin.first_price_usd)
                     ) * 100
-                coin.last_updated = datetime.utcnow()
+                coin.last_seen_at = datetime.utcnow()
                 await session.commit()
 
     @staticmethod
@@ -131,10 +132,10 @@ class DB:
             coin = result.scalar_one_or_none()
             if coin:
                 coin.signal = signal
-                coin.scan_count += 1
+                coin.scan_count = (coin.scan_count or 0) + 1
                 if ai_score is not None:
-                    coin.ai_score = ai_score
-                coin.last_updated = datetime.utcnow()
+                    coin.confidence = ai_score
+                coin.last_seen_at = datetime.utcnow()
                 await session.commit()
 
     # --- Trades ---
@@ -157,10 +158,10 @@ class DB:
                 token_address=token_address,
                 symbol=symbol,
                 side=side,
-                amount=amount,
-                price=price,
-                total_value=total_value,
-                trade_type=trade_type,
+                amount_usd=amount,
+                entry_price=price,
+                amount_token=total_value,
+                is_paper=(trade_type == "paper"),
                 tx_hash=tx_hash,
                 status=status,
             )
@@ -203,7 +204,7 @@ class DB:
                 select(func.count(Trade.id)).where(Trade.side == "sell")
             )
             total_volume = await session.scalar(
-                select(func.sum(Trade.total_value))
+                select(func.sum(Trade.amount_usd))
             ) or 0.0
 
             return {
@@ -224,9 +225,9 @@ class DB:
         """Record wallet snapshot."""
         async with async_session() as session:
             snapshot = WalletSnapshot(
-                total_balance_usd=total_balance_usd,
+                total_usd=total_balance_usd,
                 eth_balance=eth_balance,
-                token_balances=token_balances or {},
+                token_balances=str(token_balances) if token_balances else None,
             )
             session.add(snapshot)
             await session.commit()
@@ -257,7 +258,7 @@ class DB:
                 level=level,
                 event=event,
                 message=message,
-                metadata=metadata or {},
+                data=str(metadata) if metadata else None,
             )
             session.add(log)
             await session.commit()
@@ -300,9 +301,8 @@ class DB:
         """Record a performance metric."""
         async with async_session() as session:
             metric = PerformanceMetric(
-                metric_name=metric_name,
-                metric_value=metric_value,
-                metadata=metadata or {},
+                period=metric_name,
+                total_pnl_usd=metric_value,
             )
             session.add(metric)
             await session.commit()
@@ -337,8 +337,8 @@ class DB:
             )
 
             return {
-                "current_balance": latest.total_balance_usd if latest else 0.0,
-                "eth_balance": latest.eth_balance if latest else 0.0,
+                "current_balance": float(latest.total_usd) if latest else 0.0,
+                "eth_balance": float(latest.eth_balance) if latest else 0.0,
                 "total_coins_scanned": total_coins,
                 "bullish_signals": bullish_coins,
                 "bearish_signals": bearish_coins,
