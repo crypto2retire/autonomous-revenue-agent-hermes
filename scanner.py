@@ -2,9 +2,7 @@
 
 import asyncio
 import json
-import uuid
 from datetime import datetime
-from decimal import Decimal
 from typing import List, Dict, Any, Optional
 
 import httpx
@@ -31,24 +29,23 @@ class Scanner:
     # ── DexScreener API ──────────────────────────────────────────────
 
     async def get_trending(self, chain: str = "base") -> List[Dict[str, Any]]:
-        """Get trending tokens on a chain."""
+        """Get trending token profiles on a chain."""
         url = f"{DEXSCREENER_BASE}/token-profiles/latest/v1"
         try:
             resp = await self.http.get(url)
             resp.raise_for_status()
             data = resp.json()
-            # Filter by chain and sort by volume
+            # Filter by chain
             tokens = [
                 t for t in data if t.get("chainId", "").lower() == chain.lower()
             ]
-            tokens.sort(key=lambda x: float(x.get("volume", {}).get("h24", 0) or 0), reverse=True)
             return tokens[:50]
         except Exception as e:
             await DB.log_event("error", "dexscreener_trending_failed", str(e))
             return []
 
     async def get_token_pairs(self, token_address: str, chain: str = "base") -> List[Dict[str, Any]]:
-        """Get pair data for a specific token."""
+        """Get pair data for a specific token — includes symbol, name, price, volume."""
         url = f"{DEXSCREENER_BASE}/token-pairs/v1/{chain}/{token_address}"
         try:
             resp = await self.http.get(url)
@@ -68,7 +65,7 @@ class Scanner:
         volume = token.get("volume", {}).get("h24", 0)
         liquidity = token.get("liquidity", {}).get("usd", 0)
         market_cap = token.get("marketCap", 0)
-        holder_count = token.get("holderCount", 0)
+        price_change = token.get("priceChange", {}).get("h24", 0)
 
         prompt = f"""Analyze this cryptocurrency token for short-term trading potential:
 
@@ -77,7 +74,7 @@ Price: ${price}
 24h Volume: ${volume}
 Liquidity: ${liquidity}
 Market Cap: ${market_cap}
-Holders: {holder_count}
+24h Price Change: {price_change}%
 
 Provide a JSON response with exactly these fields:
 - signal: one of [buy, sell, hold, avoid]
@@ -136,29 +133,49 @@ Respond ONLY with valid JSON."""
         """Run one scan cycle: discover → analyze → persist."""
         await DB.log_event("info", "scan_started", f"Scanning {chain} chain")
 
-        tokens = await self.get_trending(chain)
-        await DB.log_event("info", "tokens_discovered", f"Found {len(tokens)} tokens", {"count": len(tokens)})
+        # Step 1: Get trending token profiles
+        profiles = await self.get_trending(chain)
+        await DB.log_event("info", "tokens_discovered", f"Found {len(profiles)} token profiles", {"count": len(profiles)})
 
-        for token in tokens:
-            address = token.get("tokenAddress", "")
-            symbol = token.get("symbol", "UNKNOWN")
-
+        for profile in profiles:
+            address = profile.get("tokenAddress", "")
             if not address:
                 continue
 
-            # Get detailed pair data
+            # Step 2: Get detailed pair data for symbol, name, price, volume
             pairs = await self.get_token_pairs(address, chain)
-            if pairs:
-                best_pair = max(pairs, key=lambda p: float(p.get("liquidity", {}).get("usd", 0) or 0))
-                token.update(best_pair)
+            if not pairs:
+                continue
 
-            # AI analysis
-            analysis = await self.analyze_opportunity(token)
+            # Use the pair with highest liquidity
+            best_pair = max(pairs, key=lambda p: float(p.get("liquidity", {}).get("usd", 0) or 0))
 
-            # Persist to watchlist
-            price = float(token.get("priceUsd", 0) or 0)
+            # Extract token info from pair data
+            base_token = best_pair.get("baseToken", {})
+            symbol = base_token.get("symbol", "UNKNOWN")
+            name = base_token.get("name", symbol)
+            price = float(best_pair.get("priceUsd", 0) or 0)
+            volume_24h = float(best_pair.get("volume", {}).get("h24", 0) or 0)
+            liquidity = float(best_pair.get("liquidity", {}).get("usd", 0) or 0)
+            market_cap = float(best_pair.get("marketCap", 0) or 0)
+            price_change = float(best_pair.get("priceChange", {}).get("h24", 0) or 0)
 
-            # Check if coin already exists
+            # Build enriched token dict for AI analysis
+            enriched_token = {
+                "tokenAddress": address,
+                "symbol": symbol,
+                "name": name,
+                "priceUsd": price,
+                "volume": {"h24": volume_24h},
+                "liquidity": {"usd": liquidity},
+                "marketCap": market_cap,
+                "priceChange": {"h24": price_change},
+            }
+
+            # Step 3: AI analysis
+            analysis = await self.analyze_opportunity(enriched_token)
+
+            # Step 4: Persist to watchlist
             existing = await DB.get_coin(address)
             if existing:
                 await DB.update_coin_signal(address, analysis["signal"], analysis["confidence"])
@@ -166,7 +183,7 @@ Respond ONLY with valid JSON."""
                 await DB.add_coin(
                     token_address=address,
                     symbol=symbol,
-                    name=token.get("name", symbol),
+                    name=name,
                     price_at_discovery=price,
                     ai_score=analysis["confidence"],
                     signal=analysis["signal"],
@@ -185,9 +202,9 @@ Respond ONLY with valid JSON."""
                     {"token_address": address, "symbol": symbol, "confidence": analysis["confidence"], "price": price},
                 )
 
-            await asyncio.sleep(0.5)  # Rate limit
+            await asyncio.sleep(1)  # Rate limit between tokens
 
-        await DB.log_event("info", "scan_completed", f"Scanned {len(tokens)} tokens")
+        await DB.log_event("info", "scan_completed", f"Scanned {len(profiles)} tokens")
 
     async def run(self):
         """Continuous scan loop."""
