@@ -55,7 +55,7 @@ class Scanner:
             resp.raise_for_status()
             return resp.json()
         except Exception as e:
-            await DB.log_event("error", "dexscreener_pairs_failed", str(e), token_address=token_address)
+            await DB.log_event("error", "dexscreener_pairs_failed", str(e), {"token_address": token_address})
             return []
 
     # ── Venice AI Analysis ───────────────────────────────────────────
@@ -120,8 +120,7 @@ Respond ONLY with valid JSON."""
         except Exception as e:
             await DB.log_event(
                 "error", "ai_analysis_failed", str(e),
-                token_address=token.get("tokenAddress", ""),
-                symbol=symbol,
+                {"token_address": token.get("tokenAddress", ""), "symbol": symbol},
             )
             return {
                 "signal": "avoid",
@@ -138,7 +137,7 @@ Respond ONLY with valid JSON."""
         await DB.log_event("info", "scan_started", f"Scanning {chain} chain")
 
         tokens = await self.get_trending(chain)
-        await DB.log_event("info", "tokens_discovered", f"Found {len(tokens)} tokens", data=json.dumps({"count": len(tokens)}))
+        await DB.log_event("info", "tokens_discovered", f"Found {len(tokens)} tokens", {"count": len(tokens)})
 
         for token in tokens:
             address = token.get("tokenAddress", "")
@@ -158,35 +157,32 @@ Respond ONLY with valid JSON."""
 
             # Persist to watchlist
             price = float(token.get("priceUsd", 0) or 0)
-            volume = float(token.get("volume", {}).get("h24", 0) or 0)
-            liquidity = float(token.get("liquidity", {}).get("usd", 0) or 0)
-            market_cap = float(token.get("marketCap", 0) or 0)
-            holder_count = int(token.get("holderCount", 0) or 0)
 
-            coin = await DB.upsert_coin(
-                token_address=address,
-                chain=chain,
-                symbol=symbol,
-                name=token.get("name", symbol),
-                price_usd=price,
-                volume_24h=volume,
-                liquidity_usd=liquidity,
-                market_cap=market_cap,
-                holder_count=holder_count,
-                signal=analysis["signal"],
-                confidence=analysis["confidence"],
-                ai_analysis=analysis["reasoning"],
-                tags=analysis["tags"],
-            )
+            # Check if coin already exists
+            existing = await DB.get_coin(address)
+            if existing:
+                await DB.update_coin_signal(address, analysis["signal"], analysis["confidence"])
+            else:
+                await DB.add_coin(
+                    token_address=address,
+                    symbol=symbol,
+                    name=token.get("name", symbol),
+                    price_at_discovery=price,
+                    ai_score=analysis["confidence"],
+                    signal=analysis["signal"],
+                    metadata={
+                        "reasoning": analysis["reasoning"],
+                        "risk_level": analysis["risk_level"],
+                        "tags": analysis["tags"],
+                    },
+                )
 
             # Log significant signals
             if analysis["signal"] == "buy" and analysis["confidence"] > 0.7:
                 await DB.log_event(
                     "info", "strong_buy_signal",
                     f"{symbol}: {analysis['reasoning']}",
-                    token_address=address,
-                    symbol=symbol,
-                    data=json.dumps({"confidence": analysis["confidence"], "price": price}),
+                    {"token_address": address, "symbol": symbol, "confidence": analysis["confidence"], "price": price},
                 )
 
             await asyncio.sleep(0.5)  # Rate limit
