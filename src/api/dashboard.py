@@ -87,7 +87,7 @@ DASHBOARD_HTML = """
             color: #e0e6ed;
             min-height: 100vh;
         }
-        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
         header {
             background: linear-gradient(135deg, #1a1f2e 0%, #0f1419 100%);
             border-bottom: 1px solid #2a3f5f;
@@ -220,6 +220,7 @@ DASHBOARD_HTML = """
             margin-bottom: 20px;
             border-bottom: 1px solid #1e3a5f;
             padding-bottom: 10px;
+            flex-wrap: wrap;
         }
         .tab {
             padding: 8px 16px;
@@ -233,7 +234,7 @@ DASHBOARD_HTML = """
         .tab.active { color: #00d4ff; background: rgba(0, 212, 255, 0.1); }
         .tab-content { display: none; }
         .tab-content.active { display: block; }
-        .opportunity-row {
+        .opportunity-row, .trade-row, .position-row, .tx-row {
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -243,14 +244,51 @@ DASHBOARD_HTML = """
             margin-bottom: 8px;
             border: 1px solid #1e3a5f;
         }
-        .opportunity-token { font-weight: 600; color: #00d4ff; }
-        .opportunity-signal { font-size: 12px; padding: 2px 8px; border-radius: 4px; }
+        .opportunity-token, .trade-token, .position-token { font-weight: 600; color: #00d4ff; }
+        .opportunity-signal, .trade-status, .position-status {
+            font-size: 12px;
+            padding: 2px 8px;
+            border-radius: 4px;
+        }
         .signal-buy { background: rgba(0, 255, 136, 0.15); color: #00ff88; }
         .signal-sell { background: rgba(255, 68, 68, 0.15); color: #ff4444; }
         .signal-hold { background: rgba(255, 170, 0, 0.15); color: #ffaa00; }
+        .status-executed { background: rgba(0, 255, 136, 0.15); color: #00ff88; }
+        .status-pending { background: rgba(255, 170, 0, 0.15); color: #ffaa00; }
+        .status-failed { background: rgba(255, 68, 68, 0.15); color: #ff4444; }
+        .status-closed { background: rgba(0, 212, 255, 0.15); color: #00d4ff; }
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        .data-table th {
+            text-align: left;
+            padding: 10px;
+            color: #6b7b8f;
+            border-bottom: 1px solid #1e3a5f;
+            font-weight: 600;
+        }
+        .data-table td {
+            padding: 10px;
+            border-bottom: 1px solid #1e3a5f;
+        }
+        .data-table tr:hover td { background: rgba(0, 212, 255, 0.05); }
+        .pnl-positive { color: #00ff88; }
+        .pnl-negative { color: #ff4444; }
+        .chart-container {
+            height: 250px;
+            background: #0a0e1a;
+            border-radius: 8px;
+            border: 1px solid #1e3a5f;
+            padding: 15px;
+            margin-top: 15px;
+        }
         @media (max-width: 768px) {
             .grid { grid-template-columns: 1fr; }
             header h1 { font-size: 22px; }
+            .tabs { gap: 5px; }
+            .tab { padding: 6px 10px; font-size: 12px; }
         }
     </style>
 </head>
@@ -265,8 +303,12 @@ DASHBOARD_HTML = """
     <div class="container">
         <div class="tabs">
             <div class="tab active" onclick="showTab('overview')">Overview</div>
-            <div class="tab" onclick="showTab('wallet')">Wallet</div>
+            <div class="tab" onclick="showTab('trades')">Trades</div>
+            <div class="tab" onclick="showTab('positions')">Positions</div>
             <div class="tab" onclick="showTab('opportunities')">Opportunities</div>
+            <div class="tab" onclick="showTab('performance')">Performance</div>
+            <div class="tab" onclick="showTab('history')">History</div>
+            <div class="tab" onclick="showTab('wallet')">Wallet</div>
             <div class="tab" onclick="showTab('logs')">Logs</div>
         </div>
 
@@ -317,28 +359,115 @@ DASHBOARD_HTML = """
                     <h2>Performance</h2>
                     <div class="metric">
                         <span class="metric-label">Total PnL</span>
-                        <span class="metric-value" style="color: #00ff88;">+$0.00</span>
+                        <span class="metric-value" id="total-pnl" style="color: #00ff88;">+$0.00</span>
                     </div>
                     <div class="metric">
                         <span class="metric-label">Trades</span>
-                        <span class="metric-value">0</span>
+                        <span class="metric-value" id="total-trades">0</span>
                     </div>
                     <div class="metric">
                         <span class="metric-label">Win Rate</span>
-                        <span class="metric-value">--</span>
+                        <span class="metric-value" id="win-rate">--</span>
                     </div>
                     <div class="metric">
-                        <span class="metric-label">Opportunities</span>
-                        <span class="metric-value" id="opportunity-count">0</span>
+                        <span class="metric-label">Open Positions</span>
+                        <span class="metric-value" id="open-positions">0</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Unrealized PnL</span>
+                        <span class="metric-value" id="unrealized-pnl">$0.00</span>
                     </div>
                 </div>
 
                 <div class="card">
                     <h2>Quick Actions</h2>
-                    <button class="btn" onclick="refreshStatus()">Refresh Status</button>
+                    <button class="btn" onclick="refreshAll()">Refresh All</button>
                     <button class="btn btn-secondary" id="mode-btn" onclick="switchMode()">Switch to Live Mode</button>
                     <button class="btn btn-secondary" id="trading-btn" onclick="toggleTrading()" style="background: #ff4444;">Stop Trading</button>
                     <button class="btn btn-secondary" onclick="location.reload()">Reload Dashboard</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Trades Tab -->
+        <div id="trades" class="tab-content">
+            <div class="card">
+                <h2>Trade History</h2>
+                <div style="margin-bottom: 15px; display: flex; gap: 10px;">
+                    <select id="trade-filter" onchange="fetchTrades()" style="background: #0a0e1a; border: 1px solid #1e3a5f; color: #e0e6ed; padding: 8px 12px; border-radius: 6px;">
+                        <option value="">All Status</option>
+                        <option value="executed">Executed</option>
+                        <option value="closed">Closed</option>
+                        <option value="failed">Failed</option>
+                        <option value="pending">Pending</option>
+                    </select>
+                    <button class="btn" onclick="fetchTrades()" style="width: auto; margin-top: 0;">Refresh</button>
+                </div>
+                <div id="trades-container">
+                    <div style="color: #6b7b8f; text-align: center; padding: 40px;">Loading trades...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Positions Tab -->
+        <div id="positions" class="tab-content">
+            <div class="card">
+                <h2>Open Positions</h2>
+                <div id="positions-summary" style="margin-bottom: 15px; padding: 12px; background: #0a0e1a; border-radius: 8px;">
+                    <span style="color: #6b7b8f;">Loading...</span>
+                </div>
+                <div id="positions-container">
+                    <div style="color: #6b7b8f; text-align: center; padding: 40px;">Loading positions...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Opportunities Tab -->
+        <div id="opportunities" class="tab-content">
+            <div class="card">
+                <h2>Latest Opportunities</h2>
+                <button class="btn" onclick="fetchOpportunities()" style="margin-bottom: 15px;">Refresh</button>
+                <div id="opportunities-list">
+                    <div style="color: #6b7b8f; text-align: center; padding: 40px;">Loading opportunities...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Performance Tab -->
+        <div id="performance" class="tab-content">
+            <div class="grid">
+                <div class="card">
+                    <h2>Latest Cycle</h2>
+                    <div id="performance-latest">
+                        <div style="color: #6b7b8f; text-align: center; padding: 20px;">Loading...</div>
+                    </div>
+                </div>
+                <div class="card">
+                    <h2>Performance History</h2>
+                    <div id="performance-history">
+                        <div style="color: #6b7b8f; text-align: center; padding: 20px;">Loading...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- History Tab -->
+        <div id="history" class="tab-content">
+            <div class="card">
+                <h2>Wallet Balance History</h2>
+                <div class="chart-container">
+                    <canvas id="wallet-chart"></canvas>
+                </div>
+                <div style="margin-top: 15px;">
+                    <button class="btn btn-secondary" onclick="fetchWalletHistory(24)" style="width: auto; display: inline-block;">24h</button>
+                    <button class="btn btn-secondary" onclick="fetchWalletHistory(168)" style="width: auto; display: inline-block;">7d</button>
+                    <button class="btn btn-secondary" onclick="fetchWalletHistory(720)" style="width: auto; display: inline-block;">30d</button>
+                </div>
+            </div>
+            <div class="card" style="margin-top: 20px;">
+                <h2>Transaction History</h2>
+                <div id="transactions-container">
+                    <div style="color: #6b7b8f; text-align: center; padding: 40px;">Loading transactions...</div>
                 </div>
             </div>
         </div>
@@ -371,23 +500,20 @@ DASHBOARD_HTML = """
             </div>
         </div>
 
-        <!-- Opportunities Tab -->
-        <div id="opportunities" class="tab-content">
-            <div class="card">
-                <h2>Latest Opportunities</h2>
-                <button class="btn" onclick="fetchOpportunities()" style="margin-bottom: 15px;">Scan Now</button>
-                <div id="opportunities-list">
-                    <div class="opportunity-row">
-                        <span style="color: #6b7b8f;">Click "Scan Now" to discover opportunities</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-
         <!-- Logs Tab -->
         <div id="logs" class="tab-content">
             <div class="card">
-                <h2>Recent Logs</h2>
+                <h2>Agent Logs</h2>
+                <div style="margin-bottom: 15px; display: flex; gap: 10px;">
+                    <select id="log-filter" onchange="fetchLogs()" style="background: #0a0e1a; border: 1px solid #1e3a5f; color: #e0e6ed; padding: 8px 12px; border-radius: 6px;">
+                        <option value="">All Levels</option>
+                        <option value="INFO">INFO</option>
+                        <option value="WARNING">WARNING</option>
+                        <option value="ERROR">ERROR</option>
+                        <option value="CRITICAL">CRITICAL</option>
+                    </select>
+                    <button class="btn" onclick="fetchLogs()" style="width: auto; margin-top: 0;">Refresh</button>
+                </div>
                 <div id="logs-container">
                     <div class="log-entry"><span class="log-time">--:--:--</span> Dashboard loaded</div>
                 </div>
@@ -395,6 +521,7 @@ DASHBOARD_HTML = """
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
         // Tab switching
         function showTab(tabName) {
@@ -402,6 +529,13 @@ DASHBOARD_HTML = """
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
             event.target.classList.add('active');
             document.getElementById(tabName).classList.add('active');
+            // Load data for tab
+            if (tabName === 'trades') fetchTrades();
+            if (tabName === 'positions') fetchPositions();
+            if (tabName === 'opportunities') fetchOpportunities();
+            if (tabName === 'performance') fetchPerformance();
+            if (tabName === 'history') { fetchWalletHistory(168); fetchTransactions(); }
+            if (tabName === 'logs') fetchLogs();
         }
 
         // Fetch status
@@ -412,7 +546,6 @@ DASHBOARD_HTML = """
                 document.getElementById('wallet-address').textContent = data.wallet_address ? data.wallet_address.slice(0, 10) + '...' + data.wallet_address.slice(-6) : '--';
                 document.getElementById('current-address').textContent = data.wallet_address || 'Not configured';
                 
-                // Update mode badge
                 const modeBadge = document.getElementById('mode-badge');
                 if (data.mode === 'live') {
                     modeBadge.textContent = 'LIVE TRADING';
@@ -421,7 +554,6 @@ DASHBOARD_HTML = """
                     modeBadge.textContent = 'Paper Trading';
                     modeBadge.className = 'status-badge status-paper';
                 }
-                // Update trading badge
                 const tradingBadge = document.getElementById('trading-badge');
                 const tradingBtn = document.getElementById('trading-btn');
                 if (data.trading_enabled === false) {
@@ -446,6 +578,300 @@ DASHBOARD_HTML = """
                 document.getElementById('wallet-eth').textContent = data.eth_balance ? parseFloat(data.eth_balance).toFixed(6) + ' ETH' : '--';
             } catch (e) {
                 console.error('Failed to fetch wallet:', e);
+            }
+        }
+
+        // Fetch trades
+        async function fetchTrades() {
+            const container = document.getElementById('trades-container');
+            const filter = document.getElementById('trade-filter').value;
+            container.innerHTML = '<div style="color: #6b7b8f; text-align: center; padding: 40px;">Loading...</div>';
+            
+            try {
+                const url = filter ? `/trades?status=${filter}&limit=50` : '/trades?limit=50';
+                const res = await fetch(url);
+                const data = await res.json();
+                
+                if (data.error) {
+                    container.innerHTML = `<div style="color: #ff4444; text-align: center; padding: 40px;">Error: ${data.error}</div>`;
+                    return;
+                }
+                
+                if (data.count === 0) {
+                    container.innerHTML = '<div style="color: #6b7b8f; text-align: center; padding: 40px;">No trades yet.</div>';
+                    return;
+                }
+                
+                let html = '<table class="data-table"><thead><tr><th>Token</th><th>Type</th><th>Status</th><th>Entry</th><th>Exit</th><th>Size</th><th>PnL</th><th>Mode</th><th>Time</th></tr></thead><tbody>';
+                data.trades.forEach(t => {
+                    const pnlClass = t.pnl_usd > 0 ? 'pnl-positive' : t.pnl_usd < 0 ? 'pnl-negative' : '';
+                    const statusClass = `status-${t.status}`;
+                    html += `<tr>
+                        <td><strong>${t.token_symbol}</strong><br><span style="font-size: 11px; color: #6b7b8f;">${t.token_address?.slice(0, 8)}...</span></td>
+                        <td>${t.trade_type?.toUpperCase()}</td>
+                        <td><span class="${statusClass}">${t.status?.toUpperCase()}</span></td>
+                        <td>$${t.entry_price?.toFixed(8) || '--'}</td>
+                        <td>$${t.exit_price?.toFixed(8) || '--'}</td>
+                        <td>$${t.position_size_usd?.toFixed(2) || '--'}</td>
+                        <td class="${pnlClass}">${t.pnl_usd ? (t.pnl_usd > 0 ? '+' : '') + '$' + t.pnl_usd.toFixed(2) : '--'}</td>
+                        <td><span class="status-badge ${t.mode === 'live' ? 'status-live' : 'status-paper'}">${t.mode?.toUpperCase()}</span></td>
+                        <td>${t.created_at ? new Date(t.created_at).toLocaleString() : '--'}</td>
+                    </tr>`;
+                });
+                html += '</tbody></table>';
+                container.innerHTML = html;
+                
+                // Update overview stats
+                if (data.stats) {
+                    document.getElementById('total-trades').textContent = data.stats.total_trades || 0;
+                    document.getElementById('win-rate').textContent = data.stats.win_rate ? data.stats.win_rate.toFixed(1) + '%' : '--';
+                    const pnlEl = document.getElementById('total-pnl');
+                    const pnl = data.stats.total_pnl_usd || 0;
+                    pnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
+                    pnlEl.style.color = pnl >= 0 ? '#00ff88' : '#ff4444';
+                }
+            } catch (e) {
+                container.innerHTML = `<div style="color: #ff4444; text-align: center; padding: 40px;">Error: ${e.message}</div>`;
+            }
+        }
+
+        // Fetch positions
+        async function fetchPositions() {
+            const container = document.getElementById('positions-container');
+            const summary = document.getElementById('positions-summary');
+            container.innerHTML = '<div style="color: #6b7b8f; text-align: center; padding: 40px;">Loading...</div>';
+            
+            try {
+                const res = await fetch('/positions');
+                const data = await res.json();
+                
+                if (data.error) {
+                    container.innerHTML = `<div style="color: #ff4444; text-align: center; padding: 40px;">Error: ${data.error}</div>`;
+                    return;
+                }
+                
+                summary.innerHTML = `<span style="color: #6b7b8f;">Open Positions: <strong style="color: #00d4ff;">${data.summary?.open_positions || 0}</strong> &nbsp;|&nbsp; Unrealized PnL: <strong style="color: ${(data.summary?.unrealized_pnl_usd || 0) >= 0 ? '#00ff88' : '#ff4444'};">${(data.summary?.unrealized_pnl_usd || 0) >= 0 ? '+' : ''}$${(data.summary?.unrealized_pnl_usd || 0).toFixed(2)}</strong></span>`;
+                document.getElementById('open-positions').textContent = data.summary?.open_positions || 0;
+                document.getElementById('unrealized-pnl').textContent = (data.summary?.unrealized_pnl_usd || 0) >= 0 ? '+' : '' + '$' + (data.summary?.unrealized_pnl_usd || 0).toFixed(2);
+                document.getElementById('unrealized-pnl').style.color = (data.summary?.unrealized_pnl_usd || 0) >= 0 ? '#00ff88' : '#ff4444';
+                
+                if (data.count === 0) {
+                    container.innerHTML = '<div style="color: #6b7b8f; text-align: center; padding: 40px;">No open positions.</div>';
+                    return;
+                }
+                
+                let html = '<table class="data-table"><thead><tr><th>Token</th><th>Entry Price</th><th>Current</th><th>Size</th><th>Unrealized PnL</th><th>Opened</th></tr></thead><tbody>';
+                data.positions.forEach(p => {
+                    const pnlClass = p.unrealized_pnl_usd > 0 ? 'pnl-positive' : p.unrealized_pnl_usd < 0 ? 'pnl-negative' : '';
+                    html += `<tr>
+                        <td><strong>${p.token_symbol}</strong></td>
+                        <td>$${p.entry_price?.toFixed(8) || '--'}</td>
+                        <td>$${p.current_price?.toFixed(8) || '--'}</td>
+                        <td>$${p.position_size_usd?.toFixed(2) || '--'}</td>
+                        <td class="${pnlClass}">${p.unrealized_pnl_usd ? (p.unrealized_pnl_usd > 0 ? '+' : '') + '$' + p.unrealized_pnl_usd.toFixed(2) : '--'} (${p.unrealized_pnl_pct?.toFixed(2) || 0}%)</td>
+                        <td>${p.opened_at ? new Date(p.opened_at).toLocaleString() : '--'}</td>
+                    </tr>`;
+                });
+                html += '</tbody></table>';
+                container.innerHTML = html;
+            } catch (e) {
+                container.innerHTML = `<div style="color: #ff4444; text-align: center; padding: 40px;">Error: ${e.message}</div>`;
+            }
+        }
+
+        // Fetch opportunities
+        async function fetchOpportunities() {
+            const container = document.getElementById('opportunities-list');
+            container.innerHTML = '<div style="color: #6b7b8f; text-align: center; padding: 40px;">Loading...</div>';
+            
+            try {
+                const res = await fetch('/opportunities');
+                const data = await res.json();
+                
+                if (data.error) {
+                    container.innerHTML = `<div style="color: #ff4444; text-align: center; padding: 40px;">Error: ${data.error}</div>`;
+                    return;
+                }
+                
+                if (data.count === 0) {
+                    container.innerHTML = '<div style="color: #6b7b8f; text-align: center; padding: 40px;">No opportunities found yet.</div>';
+                    return;
+                }
+                
+                let html = '<table class="data-table"><thead><tr><th>Token</th><th>Signal</th><th>Confidence</th><th>Price</th><th>Volume</th><th>Liquidity</th><th>Holders</th><th>Discovered</th></tr></thead><tbody>';
+                data.opportunities.forEach(opp => {
+                    html += `<tr>
+                        <td><strong>${opp.token_symbol}</strong><br><span style="font-size: 11px; color: #6b7b8f;">${opp.chain}</span></td>
+                        <td><span class="opportunity-signal signal-${opp.ai_signal}">${opp.ai_signal?.toUpperCase() || 'UNKNOWN'}</span></td>
+                        <td>${opp.ai_confidence ? (opp.ai_confidence * 100).toFixed(0) + '%' : '--'}</td>
+                        <td>$${opp.current_price_usd?.toFixed(8) || '0'}</td>
+                        <td>$${opp.volume_24h_usd?.toLocaleString() || '0'}</td>
+                        <td>$${opp.liquidity_usd?.toLocaleString() || '0'}</td>
+                        <td>${opp.total_holders?.toLocaleString() || '--'}</td>
+                        <td>${opp.discovered_at ? new Date(opp.discovered_at).toLocaleString() : '--'}</td>
+                    </tr>`;
+                });
+                html += '</tbody></table>';
+                container.innerHTML = html;
+            } catch (e) {
+                container.innerHTML = `<div style="color: #ff4444; text-align: center; padding: 40px;">Error: ${e.message}</div>`;
+            }
+        }
+
+        // Fetch performance
+        async function fetchPerformance() {
+            const latestContainer = document.getElementById('performance-latest');
+            const historyContainer = document.getElementById('performance-history');
+            latestContainer.innerHTML = '<div style="color: #6b7b8f; text-align: center; padding: 20px;">Loading...</div>';
+            historyContainer.innerHTML = '<div style="color: #6b7b8f; text-align: center; padding: 20px;">Loading...</div>';
+            
+            try {
+                const res = await fetch('/performance?limit=30');
+                const data = await res.json();
+                
+                if (data.latest) {
+                    latestContainer.innerHTML = `
+                        <div class="metric"><span class="metric-label">Total PnL</span><span class="metric-value" style="color: ${data.latest.total_pnl_usd >= 0 ? '#00ff88' : '#ff4444'}">${data.latest.total_pnl_usd >= 0 ? '+' : ''}$${data.latest.total_pnl_usd.toFixed(2)}</span></div>
+                        <div class="metric"><span class="metric-label">Trades Executed</span><span class="metric-value">${data.latest.trades_executed || 0}</span></div>
+                        <div class="metric"><span class="metric-label">Winning Trades</span><span class="metric-value" style="color: #00ff88;">${data.latest.winning_trades || 0}</span></div>
+                        <div class="metric"><span class="metric-label">Losing Trades</span><span class="metric-value" style="color: #ff4444;">${data.latest.losing_trades || 0}</span></div>
+                        <div class="metric"><span class="metric-label">Cycle Count</span><span class="metric-value">${data.latest.cycle_count || 0}</span></div>
+                    `;
+                } else {
+                    latestContainer.innerHTML = '<div style="color: #6b7b8f; text-align: center;">No performance data yet.</div>';
+                }
+                
+                if (data.metrics && data.metrics.length > 0) {
+                    let html = '<table class="data-table"><thead><tr><th>Period</th><th>Trades</th><th>Win/Loss</th><th>PnL</th><th>Cycles</th></tr></thead><tbody>';
+                    data.metrics.forEach(m => {
+                        const pnlClass = m.total_pnl_usd > 0 ? 'pnl-positive' : m.total_pnl_usd < 0 ? 'pnl-negative' : '';
+                        html += `<tr>
+                            <td>${m.period_start ? new Date(m.period_start).toLocaleDateString() : '--'}</td>
+                            <td>${m.trades_executed || 0}</td>
+                            <td>${m.winning_trades || 0} / ${m.losing_trades || 0}</td>
+                            <td class="${pnlClass}">${m.total_pnl_usd ? (m.total_pnl_usd > 0 ? '+' : '') + '$' + m.total_pnl_usd.toFixed(2) : '$0.00'}</td>
+                            <td>${m.cycle_count || 0}</td>
+                        </tr>`;
+                    });
+                    html += '</tbody></table>';
+                    historyContainer.innerHTML = html;
+                } else {
+                    historyContainer.innerHTML = '<div style="color: #6b7b8f; text-align: center;">No history yet.</div>';
+                }
+            } catch (e) {
+                latestContainer.innerHTML = `<div style="color: #ff4444; text-align: center;">Error: ${e.message}</div>`;
+                historyContainer.innerHTML = `<div style="color: #ff4444; text-align: center;">Error: ${e.message}</div>`;
+            }
+        }
+
+        // Fetch wallet history
+        let walletChart = null;
+        async function fetchWalletHistory(hours = 168) {
+            try {
+                const res = await fetch(`/wallet/history?hours=${hours}`);
+                const data = await res.json();
+                
+                if (data.history && data.history.length > 0) {
+                    const labels = data.history.map(h => new Date(h.snapshot_at).toLocaleDateString() + ' ' + new Date(h.snapshot_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}));
+                    const balances = data.history.map(h => h.total_balance_usd);
+                    
+                    const ctx = document.getElementById('wallet-chart').getContext('2d');
+                    
+                    if (walletChart) walletChart.destroy();
+                    
+                    walletChart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: labels,
+                            datasets: [{
+                                label: 'Balance (USD)',
+                                data: balances,
+                                borderColor: '#00d4ff',
+                                backgroundColor: 'rgba(0, 212, 255, 0.1)',
+                                fill: true,
+                                tension: 0.4,
+                                pointRadius: 2,
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: { display: false },
+                            },
+                            scales: {
+                                x: { display: false },
+                                y: {
+                                    grid: { color: '#1e3a5f' },
+                                    ticks: { color: '#6b7b8f', callback: v => '$' + v.toFixed(2) }
+                                }
+                            }
+                        }
+                    });
+                }
+            } catch (e) {
+                console.error('Wallet history fetch failed:', e);
+            }
+        }
+
+        // Fetch transactions
+        async function fetchTransactions() {
+            const container = document.getElementById('transactions-container');
+            container.innerHTML = '<div style="color: #6b7b8f; text-align: center; padding: 40px;">Loading...</div>';
+            
+            try {
+                const res = await fetch('/transactions?limit=50');
+                const data = await res.json();
+                
+                if (data.count === 0) {
+                    container.innerHTML = '<div style="color: #6b7b8f; text-align: center; padding: 40px;">No transactions yet.</div>';
+                    return;
+                }
+                
+                let html = '<table class="data-table"><thead><tr><th>Type</th><th>Token</th><th>Status</th><th>Amount In</th><th>Amount Out</th><th>Fee</th><th>Mode</th><th>Time</th></tr></thead><tbody>';
+                data.transactions.forEach(tx => {
+                    html += `<tr>
+                        <td>${tx.tx_type?.toUpperCase()}</td>
+                        <td>${tx.token_symbol || tx.token_address?.slice(0, 8) + '...'}</td>
+                        <td><span class="status-${tx.status}">${tx.status?.toUpperCase()}</span></td>
+                        <td>${tx.amount_in?.toFixed(6) || '--'}</td>
+                        <td>${tx.amount_out?.toFixed(6) || '--'}</td>
+                        <td>$${tx.fee_usd?.toFixed(4) || '--'}</td>
+                        <td><span class="status-badge ${tx.mode === 'live' ? 'status-live' : 'status-paper'}">${tx.mode?.toUpperCase()}</span></td>
+                        <td>${tx.created_at ? new Date(tx.created_at).toLocaleString() : '--'}</td>
+                    </tr>`;
+                });
+                html += '</tbody></table>';
+                container.innerHTML = html;
+            } catch (e) {
+                container.innerHTML = `<div style="color: #ff4444; text-align: center; padding: 40px;">Error: ${e.message}</div>`;
+            }
+        }
+
+        // Fetch logs
+        async function fetchLogs() {
+            const container = document.getElementById('logs-container');
+            const filter = document.getElementById('log-filter').value;
+            container.innerHTML = '<div style="color: #6b7b8f; text-align: center; padding: 20px;">Loading...</div>';
+            
+            try {
+                const url = filter ? `/logs?level=${filter}&limit=100` : '/logs?limit=100';
+                const res = await fetch(url);
+                const data = await res.json();
+                
+                if (data.count === 0) {
+                    container.innerHTML = '<div style="color: #6b7b8f; text-align: center; padding: 20px;">No logs yet.</div>';
+                    return;
+                }
+                
+                container.innerHTML = '';
+                data.logs.forEach(log => {
+                    const colorClass = log.level === 'ERROR' ? 'log-error' : log.level === 'WARNING' ? 'log-warn' : log.level === 'CRITICAL' ? 'log-error' : 'log-info';
+                    const time = log.created_at ? new Date(log.created_at).toLocaleTimeString() : '--:--:--';
+                    container.innerHTML += `<div class="log-entry"><span class="log-time">${time}</span> <span class="${colorClass}">[${log.level}] ${log.event}</span> ${log.message || ''}</div>`;
+                });
+            } catch (e) {
+                container.innerHTML = `<div style="color: #ff4444; text-align: center; padding: 20px;">Error: ${e.message}</div>`;
             }
         }
 
@@ -537,58 +963,24 @@ DASHBOARD_HTML = """
             }
         }
 
-        // Fetch opportunities
-        async function fetchOpportunities() {
-            const container = document.getElementById('opportunities-list');
-            container.innerHTML = '<div class="opportunity-row"><span style="color: #6b7b8f;">Scanning...</span></div>';
-            
-            try {
-                const res = await fetch('/opportunities');
-                const data = await res.json();
-                
-                if (data.error) {
-                    container.innerHTML = `<div class="opportunity-row"><span style="color: #ff4444;">Error: ${data.error}</span></div>`;
-                    return;
-                }
-                
-                if (data.count === 0) {
-                    container.innerHTML = '<div class="opportunity-row"><span style="color: #6b7b8f;">No opportunities found yet. Try again in a few minutes.</span></div>';
-                    return;
-                }
-                
-                container.innerHTML = data.opportunities.map(opp => `
-                    <div class="opportunity-row">
-                        <div>
-                            <div class="opportunity-token">${opp.token_symbol} <span style="color: #6b7b8f; font-size: 11px;">${opp.chain}</span></div>
-                            <div style="font-size: 11px; color: #6b7b8f; margin-top: 2px;">$${opp.current_price_usd?.toFixed(8) || '0'} | Vol: $${opp.volume_24h_usd?.toLocaleString() || '0'}</div>
-                        </div>
-                        <div style="text-align: right;">
-                            <span class="opportunity-signal signal-${opp.ai_signal}">${opp.ai_signal?.toUpperCase() || 'UNKNOWN'}</span>
-                            <div style="font-size: 11px; color: #6b7b8f; margin-top: 2px;">${opp.ai_confidence ? (opp.ai_confidence * 100).toFixed(0) + '%' : ''} confidence</div>
-                        </div>
-                    </div>
-                `).join('');
-                
-                document.getElementById('opportunity-count').textContent = data.count;
-            } catch (e) {
-                container.innerHTML = `<div class="opportunity-row"><span style="color: #ff4444;">Error: ${e.message}</span></div>`;
-            }
+        // Refresh all data
+        async function refreshAll() {
+            await refreshStatus();
+            await fetchTrades();
+            await fetchPositions();
         }
 
         // Auto-refresh
         refreshStatus();
         setInterval(refreshStatus, 30000);
-
-        // Add log entry
-        function addLog(level, message) {
-            const container = document.getElementById('logs-container');
-            const time = new Date().toLocaleTimeString();
-            const colorClass = level === 'error' ? 'log-error' : level === 'warn' ? 'log-warn' : 'log-info';
-            container.innerHTML = `<div class="log-entry"><span class="log-time">${time}</span> <span class="${colorClass}">${message}</span></div>` + container.innerHTML;
-            if (container.children.length > 50) container.lastChild.remove();
-        }
-
-        addLog('info', 'Dashboard connected');
+        setInterval(() => {
+            const activeTab = document.querySelector('.tab-content.active').id;
+            if (activeTab === 'trades') fetchTrades();
+            if (activeTab === 'positions') fetchPositions();
+            if (activeTab === 'opportunities') fetchOpportunities();
+            if (activeTab === 'performance') fetchPerformance();
+            if (activeTab === 'logs') fetchLogs();
+        }, 30000);
     </script>
 </body>
 </html>
@@ -691,40 +1083,37 @@ async def get_token_balance(token_address: str):
 
 @app.get("/opportunities")
 async def get_opportunities():
-    """Get latest discovered opportunities."""
+    """Get latest discovered opportunities from DB."""
     try:
-        # Import scanner to get latest opportunities
-        from src.opportunity import OpportunityScanner
-        from src.venice import VeniceClient
+        from src.db import AgentRepository
+        db = AgentRepository()
+        await db.initialize()
         
-        venice = VeniceClient()
-        scanner = OpportunityScanner(venice)
-        opportunities = await scanner.scan()
+        opps = await db.list_opportunities(limit=50)
         
-        # Convert to JSON-serializable format
         results = []
-        for opp in opportunities:
+        for opp in opps:
             results.append({
-                "id": opp.id,
+                "id": opp.opp_id,
                 "token_address": opp.token_address,
                 "token_symbol": opp.token_symbol,
                 "token_name": opp.token_name,
                 "chain": opp.chain,
-                "current_price_usd": float(opp.current_price_usd),
-                "price_change_24h_pct": float(opp.price_change_24h_pct),
+                "current_price_usd": float(opp.price_usd) if opp.price_usd else None,
+                "price_change_24h_pct": float(opp.price_change_24h_pct) if opp.price_change_24h_pct else None,
                 "market_cap_usd": float(opp.market_cap_usd) if opp.market_cap_usd else None,
                 "ai_signal": opp.ai_signal,
                 "ai_confidence": float(opp.ai_confidence) if opp.ai_confidence else None,
                 "ai_risk_level": opp.ai_risk_level,
-                "status": opp.status.value,
+                "trade_executed": opp.trade_executed,
                 "discovered_at": opp.discovered_at.isoformat() if opp.discovered_at else None,
-                "volume_24h_usd": float(opp.volume_metrics.volume_24h_usd) if opp.volume_metrics else None,
-                "liquidity_usd": float(opp.volume_metrics.liquidity_usd) if opp.volume_metrics else None,
-                "buy_sell_ratio": float(opp.volume_metrics.buy_sell_ratio) if opp.volume_metrics else None,
-                "total_holders": opp.holder_metrics.total_holders if opp.holder_metrics else None,
+                "volume_24h_usd": float(opp.volume_24h_usd) if opp.volume_24h_usd else None,
+                "liquidity_usd": float(opp.liquidity_usd) if opp.liquidity_usd else None,
+                "buy_sell_ratio": float(opp.buy_sell_ratio) if opp.buy_sell_ratio else None,
+                "total_holders": opp.total_holders,
             })
         
-        await scanner.close()
+        await db.close()
         
         return {
             "opportunities": results,
@@ -739,6 +1128,269 @@ async def get_opportunities():
             "error": str(e),
             "timestamp": datetime.utcnow().isoformat(),
         }
+
+
+@app.get("/trades")
+async def get_trades(status: str = None, limit: int = 100, offset: int = 0):
+    """Get trade history from DB."""
+    try:
+        from src.db import AgentRepository
+        db = AgentRepository()
+        await db.initialize()
+        
+        trades = await db.list_trades(status=status, limit=limit, offset=offset)
+        
+        results = []
+        for t in trades:
+            results.append({
+                "trade_id": t.trade_id,
+                "token_symbol": t.token_symbol,
+                "token_address": t.token_address,
+                "chain": t.chain,
+                "trade_type": t.trade_type,
+                "status": t.status,
+                "mode": t.mode,
+                "entry_price": float(t.entry_price) if t.entry_price else None,
+                "exit_price": float(t.exit_price) if t.exit_price else None,
+                "position_size_usd": float(t.position_size_usd) if t.position_size_usd else None,
+                "pnl_usd": float(t.pnl_usd) if t.pnl_usd else None,
+                "pnl_pct": float(t.pnl_pct) if t.pnl_pct else None,
+                "ai_signal": t.ai_signal,
+                "ai_confidence": float(t.ai_confidence) if t.ai_confidence else None,
+                "ai_risk_level": t.ai_risk_level,
+                "executed_at": t.executed_at.isoformat() if t.executed_at else None,
+                "closed_at": t.closed_at.isoformat() if t.closed_at else None,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+            })
+        
+        # Get stats
+        stats = await db.get_trade_stats()
+        await db.close()
+        
+        return {
+            "trades": results,
+            "count": len(results),
+            "stats": stats,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        logger.error("trades_fetch_failed", error=str(e))
+        return {"trades": [], "count": 0, "stats": {}, "error": str(e)}
+
+
+@app.get("/positions")
+async def get_positions():
+    """Get current open positions from DB."""
+    try:
+        from src.db import AgentRepository
+        db = AgentRepository()
+        await db.initialize()
+        
+        positions = await db.list_open_positions(status="open")
+        summary = await db.get_position_summary()
+        
+        results = []
+        for p in positions:
+            results.append({
+                "position_id": p.position_id,
+                "trade_id": p.trade_id,
+                "token_symbol": p.token_symbol,
+                "token_address": p.token_address,
+                "chain": p.chain,
+                "entry_price": float(p.entry_price),
+                "current_price": float(p.current_price) if p.current_price else None,
+                "position_size_usd": float(p.position_size_usd),
+                "unrealized_pnl_usd": float(p.unrealized_pnl_usd),
+                "unrealized_pnl_pct": float(p.unrealized_pnl_pct),
+                "opened_at": p.opened_at.isoformat() if p.opened_at else None,
+                "last_updated": p.last_updated.isoformat() if p.last_updated else None,
+            })
+        
+        await db.close()
+        
+        return {
+            "positions": results,
+            "summary": summary,
+            "count": len(results),
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        logger.error("positions_fetch_failed", error=str(e))
+        return {"positions": [], "summary": {}, "count": 0, "error": str(e)}
+
+
+@app.get("/transactions")
+async def get_transactions(trade_id: str = None, limit: int = 100, offset: int = 0):
+    """Get transaction history from DB."""
+    try:
+        from src.db import AgentRepository
+        db = AgentRepository()
+        await db.initialize()
+        
+        txs = await db.list_transactions(trade_id=trade_id, limit=limit, offset=offset)
+        
+        results = []
+        for tx in txs:
+            results.append({
+                "tx_id": tx.tx_id,
+                "trade_id": tx.trade_id,
+                "tx_type": tx.tx_type,
+                "status": tx.status,
+                "token_symbol": tx.token_symbol,
+                "token_address": tx.token_address,
+                "amount_in": float(tx.amount_in) if tx.amount_in else None,
+                "amount_out": float(tx.amount_out) if tx.amount_out else None,
+                "amount_usd": float(tx.amount_usd) if tx.amount_usd else None,
+                "fee_usd": float(tx.fee_usd) if tx.fee_usd else None,
+                "tx_hash": tx.tx_hash,
+                "mode": tx.mode,
+                "created_at": tx.created_at.isoformat() if tx.created_at else None,
+                "confirmed_at": tx.confirmed_at.isoformat() if tx.confirmed_at else None,
+            })
+        
+        await db.close()
+        
+        return {
+            "transactions": results,
+            "count": len(results),
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        logger.error("transactions_fetch_failed", error=str(e))
+        return {"transactions": [], "count": 0, "error": str(e)}
+
+
+@app.get("/performance")
+async def get_performance(period_type: str = "day", limit: int = 30):
+    """Get performance metrics history from DB."""
+    try:
+        from src.db import AgentRepository
+        db = AgentRepository()
+        await db.initialize()
+        
+        metrics = await db.get_performance_history(period_type=period_type, limit=limit)
+        latest = await db.get_latest_performance()
+        
+        results = []
+        for m in metrics:
+            results.append({
+                "metric_id": m.metric_id,
+                "period_type": m.period_type,
+                "period_start": m.period_start.isoformat() if m.period_start else None,
+                "period_end": m.period_end.isoformat() if m.period_end else None,
+                "trades_executed": m.trades_executed,
+                "trades_closed": m.trades_closed,
+                "winning_trades": m.winning_trades,
+                "losing_trades": m.losing_trades,
+                "total_pnl_usd": float(m.total_pnl_usd) if m.total_pnl_usd else 0,
+                "total_fees_usd": float(m.total_fees_usd) if m.total_fees_usd else 0,
+                "starting_balance_usd": float(m.starting_balance_usd) if m.starting_balance_usd else None,
+                "ending_balance_usd": float(m.ending_balance_usd) if m.ending_balance_usd else None,
+                "open_positions_count": m.open_positions_count,
+                "opportunities_found": m.opportunities_found,
+                "opportunities_executed": m.opportunities_executed,
+                "service_revenue_usd": float(m.service_revenue_usd) if m.service_revenue_usd else 0,
+                "cycle_count": m.cycle_count,
+                "trading_enabled": m.trading_enabled,
+                "survival_mode": m.survival_mode,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+            })
+        
+        latest_data = None
+        if latest:
+            latest_data = {
+                "metric_id": latest.metric_id,
+                "period_type": latest.period_type,
+                "total_pnl_usd": float(latest.total_pnl_usd) if latest.total_pnl_usd else 0,
+                "trades_executed": latest.trades_executed,
+                "winning_trades": latest.winning_trades,
+                "losing_trades": latest.losing_trades,
+                "cycle_count": latest.cycle_count,
+            }
+        
+        await db.close()
+        
+        return {
+            "metrics": results,
+            "latest": latest_data,
+            "count": len(results),
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        logger.error("performance_fetch_failed", error=str(e))
+        return {"metrics": [], "latest": None, "count": 0, "error": str(e)}
+
+
+@app.get("/wallet/history")
+async def get_wallet_history(hours: int = 168):
+    """Get wallet balance history from DB."""
+    try:
+        from src.db import AgentRepository
+        db = AgentRepository()
+        await db.initialize()
+        
+        history = await db.get_wallet_history(
+            wallet_address=settings.base_wallet_address,
+            hours=hours,
+        )
+        
+        results = []
+        for snap in history:
+            results.append({
+                "eth_balance": float(snap.eth_balance) if snap.eth_balance else 0,
+                "eth_price_usd": float(snap.eth_price_usd) if snap.eth_price_usd else 0,
+                "total_balance_usd": float(snap.total_balance_usd) if snap.total_balance_usd else 0,
+                "snapshot_at": snap.snapshot_at.isoformat() if snap.snapshot_at else None,
+            })
+        
+        await db.close()
+        
+        return {
+            "history": results,
+            "count": len(results),
+            "wallet": settings.base_wallet_address,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        logger.error("wallet_history_fetch_failed", error=str(e))
+        return {"history": [], "count": 0, "error": str(e)}
+
+
+@app.get("/logs")
+async def get_logs(level: str = None, limit: int = 200, offset: int = 0):
+    """Get agent logs from DB."""
+    try:
+        from src.db import AgentRepository
+        db = AgentRepository()
+        await db.initialize()
+        
+        logs = await db.list_logs(level=level, limit=limit, offset=offset)
+        
+        results = []
+        for log in logs:
+            results.append({
+                "log_id": log.log_id,
+                "logger_name": log.logger_name,
+                "level": log.level,
+                "event": log.event,
+                "message": log.message,
+                "cycle": log.cycle,
+                "token_address": log.token_address,
+                "trade_id": log.trade_id,
+                "tx_hash": log.tx_hash,
+                "created_at": log.created_at.isoformat() if log.created_at else None,
+            })
+        
+        await db.close()
+        
+        return {
+            "logs": results,
+            "count": len(results),
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        logger.error("logs_fetch_failed", error=str(e))
+        return {"logs": [], "count": 0, "error": str(e)}
 
 
 @app.get("/health")

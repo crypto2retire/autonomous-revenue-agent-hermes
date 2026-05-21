@@ -1,5 +1,6 @@
 """Application settings using pydantic-settings."""
 
+from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, SecretStr
 from decimal import Decimal
@@ -47,23 +48,20 @@ class Settings(BaseSettings):
     fly_app_name: str = "autonomous-revenue-agent"
     fly_region: str = "ord"
 
-    # Agent Identity
-    agent_name: str = "RevenueSeeker"
-    agent_mode: str = Field(default="paper", description="Agent mode: paper, live, or maintenance")
+    # Agent Configuration
+    agent_name: str = "AutonomousRevenueAgent"
+    agent_mode: str = "paper"  # "paper" or "live"
+    agent_version: str = "1.0.0"
 
-    # Trading Limits
-    max_trade_size_usd: Decimal = Field(default=Decimal("100.00"))
-    daily_budget_usd: Decimal = Field(default=Decimal("50.00"))
-    risk_per_trade_pct: Decimal = Field(default=Decimal("2.0"))
-
-    # Survival Thresholds
-    min_balance_usd: Decimal = Field(default=Decimal("10.00"))
-    hosting_cost_usd_per_day: Decimal = Field(default=Decimal("2.50"))
-    emergency_shutdown_balance: Decimal = Field(default=Decimal("5.00"))
+    # Risk Management
+    max_position_pct: Decimal = Decimal("0.10")  # Max 10% of portfolio per position
+    min_liquidity_usd: Decimal = Decimal("10000")  # Minimum $10k liquidity
+    min_holders: int = 100
+    max_slippage_pct: Decimal = Decimal("2.0")
 
     # Monitoring
-    sentry_dsn: SecretStr | None = None
-    prometheus_port: int = 8000
+    sentry_dsn: Optional[SecretStr] = None
+    log_level: str = "INFO"
 
     @property
     def is_live(self) -> bool:

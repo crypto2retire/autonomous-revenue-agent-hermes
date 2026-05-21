@@ -8,6 +8,7 @@ primary_region = "ord"
   AGENT_MODE = "paper"
   PYTHONUNBUFFERED = "1"
 
+# HTTP service for dashboard + API
 [[services]]
   internal_port = 8000
   protocol = "tcp"
@@ -32,6 +33,23 @@ primary_region = "ord"
     method = "GET"
     path = "/health"
     port = 8000
+
+# Background worker service — always running, no public ports
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.checks]]
+    type = "http"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
+    port = 8080
 
 [[vm]]
   cpu_kind = "shared"

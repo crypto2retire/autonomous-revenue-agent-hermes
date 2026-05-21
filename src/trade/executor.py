@@ -29,8 +29,12 @@ class TradeExecutor:
         self._account = Account.from_key(self._private_key)
         self._paper_positions: dict[str, dict] = {}
 
-    async def execute_opportunity(self, opportunity: Opportunity) -> bool:
+    async def execute_opportunity(self, opportunity: Opportunity, db=None) -> bool:
         """Execute a trade for an approved opportunity.
+
+        Args:
+            opportunity: The opportunity to trade
+            db: Optional AgentRepository for persistence
 
         Returns True if successful, False otherwise.
         """
@@ -61,11 +65,34 @@ class TradeExecutor:
             opportunity.position_size_usd = position_size
             opportunity.entry_price = opportunity.current_price_usd
 
+            # Create trade record in DB
+            trade_id: Optional[str] = None
+            if db:
+                try:
+                    trade = await db.create_trade(
+                        token_address=opportunity.token_address,
+                        token_symbol=opportunity.token_symbol,
+                        token_name=opportunity.token_name,
+                        chain=opportunity.chain,
+                        trade_type="buy",
+                        status="pending",
+                        mode=settings.agent_mode,
+                        entry_price=opportunity.entry_price,
+                        position_size_usd=position_size,
+                        ai_signal=opportunity.ai_signal,
+                        ai_confidence=opportunity.ai_confidence,
+                        ai_risk_level=opportunity.ai_risk_level,
+                        ai_reasoning=opportunity.ai_reasoning,
+                    )
+                    trade_id = trade.trade_id
+                except Exception as e:
+                    logger.error("trade_db_create_failed", error=str(e))
+
             # Execute based on mode
             if settings.is_live:
                 success = await self._execute_live_trade(opportunity)
             else:
-                success = await self._execute_paper_trade(opportunity)
+                success = await self._execute_paper_trade(opportunity, trade_id=trade_id, db=db)
 
             if success:
                 opportunity.status = OpportunityStatus.EXECUTED
@@ -77,8 +104,20 @@ class TradeExecutor:
                     price=float(opportunity.entry_price),
                     mode="live" if settings.is_live else "paper",
                 )
+                # Update trade record
+                if db and trade_id:
+                    await db.update_trade(
+                        trade_id=trade_id,
+                        status="executed",
+                        executed_at=datetime.utcnow(),
+                    )
             else:
                 opportunity.status = OpportunityStatus.FAILED
+                if db and trade_id:
+                    await db.update_trade(
+                        trade_id=trade_id,
+                        status="failed",
+                    )
 
             return success
 
@@ -93,24 +132,33 @@ class TradeExecutor:
         TODO: Implement actual DEX integration (Uniswap V3, Odos, etc.)
         """
         logger.warning("live_trading_not_implemented", token=opportunity.token_symbol)
-
-        # Placeholder for actual swap execution
-        # 1. Approve token spending
-        # 2. Build swap transaction
-        # 3. Sign and send
-        # 4. Wait for confirmation
-        # 5. Record position
-
         return False
 
-    async def _execute_paper_trade(self, opportunity: Opportunity) -> bool:
+    async def _execute_paper_trade(self, opportunity: Opportunity, trade_id: Optional[str] = None, db=None) -> bool:
         """Execute a paper/simulated trade."""
-        self._paper_positions[opportunity.token_address] = {
+        position_data = {
             "entry_price": float(opportunity.entry_price),
             "position_size": float(opportunity.position_size_usd),
             "entry_time": datetime.utcnow().isoformat(),
             "token_symbol": opportunity.token_symbol,
+            "trade_id": trade_id,
         }
+        self._paper_positions[opportunity.token_address] = position_data
+
+        # Create open position in DB
+        if db and trade_id:
+            try:
+                await db.create_open_position(
+                    trade_id=trade_id,
+                    token_address=opportunity.token_address,
+                    token_symbol=opportunity.token_symbol,
+                    chain=opportunity.chain,
+                    entry_price=opportunity.entry_price,
+                    position_size_usd=opportunity.position_size_usd or Decimal("0"),
+                    mode="paper",
+                )
+            except Exception as e:
+                logger.error("open_position_db_create_failed", error=str(e))
 
         logger.info(
             "paper_trade_executed",
@@ -124,6 +172,7 @@ class TradeExecutor:
         self,
         opportunity: Opportunity,
         current_price: Decimal,
+        db=None,
     ) -> Decimal:
         """Close a position and calculate P&L.
 
@@ -149,6 +198,37 @@ class TradeExecutor:
         # Record for risk tracking
         self.risk.record_trade_result(pnl_usd)
 
+        # Update DB
+        if db:
+            try:
+                # Find and update trade
+                trades = await db.list_trades(
+                    token_address=opportunity.token_address,
+                    status="executed",
+                    limit=1,
+                )
+                if trades:
+                    await db.update_trade(
+                        trade_id=trades[0].trade_id,
+                        status="closed",
+                        exit_price=current_price,
+                        pnl_usd=pnl_usd,
+                        pnl_pct=pnl_pct,
+                        closed_at=datetime.utcnow(),
+                    )
+                    # Close open position
+                    positions = await db.list_open_positions(status="open")
+                    for pos in positions:
+                        if pos.token_address == opportunity.token_address:
+                            await db.close_open_position(
+                                position_id=pos.position_id,
+                                current_price=current_price,
+                                unrealized_pnl_usd=pnl_usd,
+                                unrealized_pnl_pct=pnl_pct,
+                            )
+            except Exception as e:
+                logger.error("close_position_db_update_failed", error=str(e))
+
         logger.info(
             "position_closed",
             token=opportunity.token_symbol,
@@ -162,8 +242,6 @@ class TradeExecutor:
 
     async def _get_portfolio_value(self) -> Decimal:
         """Get total portfolio value in USD."""
-        # TODO: Calculate actual portfolio value
-        # For now, return wallet balance
         try:
             eth_balance_wei = self.w3.eth.get_balance(self.wallet_address)
             eth_balance = self.w3.from_wei(eth_balance_wei, "ether")
@@ -172,8 +250,29 @@ class TradeExecutor:
         except Exception:
             return Decimal("0")
 
-    def get_open_positions(self) -> list[dict]:
+    async def get_open_positions(self, db=None) -> list[dict]:
         """Get list of open positions."""
+        if db:
+            try:
+                db_positions = await db.list_open_positions(status="open")
+                return [
+                    {
+                        "position_id": p.position_id,
+                        "trade_id": p.trade_id,
+                        "token_address": p.token_address,
+                        "token_symbol": p.token_symbol,
+                        "entry_price": float(p.entry_price),
+                        "current_price": float(p.current_price) if p.current_price else None,
+                        "position_size_usd": float(p.position_size_usd),
+                        "unrealized_pnl_usd": float(p.unrealized_pnl_usd),
+                        "unrealized_pnl_pct": float(p.unrealized_pnl_pct),
+                        "opened_at": p.opened_at.isoformat() if p.opened_at else None,
+                    }
+                    for p in db_positions
+                ]
+            except Exception as e:
+                logger.error("db_open_positions_fetch_failed", error=str(e))
+
         if settings.is_paper:
             return list(self._paper_positions.values())
 
