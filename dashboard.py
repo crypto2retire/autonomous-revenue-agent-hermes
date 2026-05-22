@@ -4,14 +4,14 @@ from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse
 from typing import Optional
 
-from database import DB, init_db
+from database import DB
 
 app = FastAPI(title="Crypto Trading Agent")
 
 
 @app.on_event("startup")
 async def startup():
-    await init_db()
+    await DB.init()
 
 
 # ── Health ─────────────────────────────────────────────────────────
