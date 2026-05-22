@@ -227,6 +227,41 @@ async def set_setting_api(key: str, value: str, value_type: str = "string"):
     return {"status": "ok", "key": key}
 
 
+# ── Live Trading Toggle ────────────────────────────────────────────
+
+@app.get("/api/trading/status")
+async def get_trading_status():
+    """Get current live trading status."""
+    is_live = await DB.get_setting("live_trading_enabled", False)
+    return {"live_trading_enabled": is_live}
+
+
+@app.post("/api/trading/toggle")
+async def toggle_trading():
+    """Toggle live trading on/off."""
+    current = await DB.get_setting("live_trading_enabled", False)
+    new_value = not current
+    await DB.set_setting("live_trading_enabled", new_value, "bool", "Whether live trading is enabled (true) or paper trading only (false)")
+    await DB.log_event("info", "trading_toggled", f"Live trading {'enabled' if new_value else 'disabled'}")
+    return {"live_trading_enabled": new_value, "message": f"Live trading {'enabled' if new_value else 'disabled'}"}
+
+
+@app.post("/api/trading/enable")
+async def enable_trading():
+    """Enable live trading."""
+    await DB.set_setting("live_trading_enabled", True, "bool", "Whether live trading is enabled")
+    await DB.log_event("info", "trading_enabled", "Live trading enabled")
+    return {"live_trading_enabled": True, "message": "Live trading enabled"}
+
+
+@app.post("/api/trading/disable")
+async def disable_trading():
+    """Disable live trading (paper mode)."""
+    await DB.set_setting("live_trading_enabled", False, "bool", "Whether live trading is enabled")
+    await DB.log_event("info", "trading_disabled", "Live trading disabled - paper mode only")
+    return {"live_trading_enabled": False, "message": "Live trading disabled - paper mode only"}
+
+
 # ── HTML Dashboard ─────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
@@ -360,6 +395,7 @@ async def dashboard():
             <div class="tab" onclick="showTab('trades')">💰 Trades</div>
             <div class="tab" onclick="showTab('performance')">📊 Performance</div>
             <div class="tab" onclick="showTab('logs')">📝 Logs</div>
+            <div class="tab" onclick="showTab('settings')">⚙️ Settings</div>
         </div>
 
         <!-- Watchlist Panel -->
@@ -538,6 +574,39 @@ async def dashboard():
             </table>
         </div>
 
+        <!-- Settings Panel -->
+        <div class="panel" id="settings-panel">
+            <div class="refresh-bar">
+                <span>Agent Settings</span>
+            </div>
+            <div class="stats-grid" id="settings-stats">
+                <div class="stat-card">
+                    <div class="stat-value" id="trading-status">Loading...</div>
+                    <div class="stat-label">Trading Mode</div>
+                </div>
+            </div>
+            <div style="background: #111827; border: 1px solid #1a2332; border-radius: 8px; padding: 20px; margin-top: 20px;">
+                <h3 style="color: #00d4aa; margin-bottom: 15px;">🔄 Live Trading Toggle</h3>
+                <p style="color: #8892a0; margin-bottom: 20px;">
+                    Control whether the agent executes real trades with real funds. 
+                    When disabled, the agent runs in paper trading mode (simulated trades only).
+                </p>
+                <div id="trading-toggle-section">
+                    <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 20px;">
+                        <div id="trading-indicator" style="width: 12px; height: 12px; border-radius: 50%; background: #4b5563;"></div>
+                        <span id="trading-text" style="font-size: 1.1rem; font-weight: 600;">Loading...</span>
+                    </div>
+                    <button class="btn" id="trading-toggle-btn" onclick="toggleTrading()" style="width: auto;">Toggle Trading</button>
+                </div>
+                <div id="trading-message" style="margin-top: 15px; padding: 10px; border-radius: 4px; display: none;"></div>
+            </div>
+            
+            <div style="background: #111827; border: 1px solid #1a2332; border-radius: 8px; padding: 20px; margin-top: 20px;">
+                <h3 style="color: #00d4aa; margin-bottom: 15px;">📋 All Settings</h3>
+                <div id="settings-list">Loading...</div>
+            </div>
+        </div>
+
         <!-- Coin Detail Panel -->
         <div class="panel" id="coin-detail-panel">
             <button class="btn btn-secondary back-btn" onclick="showTab('watchlist')">← Back to Watchlist</button>
@@ -557,6 +626,7 @@ async def dashboard():
             if (name === 'trades') loadTrades();
             if (name === 'performance') loadPerformance();
             if (name === 'logs') loadLogs();
+            if (name === 'settings') loadSettings();
         }
 
         function fmtNum(n, d=2) {
@@ -929,6 +999,75 @@ async def dashboard():
                     <td>${l.message}</td>
                 </tr>
             `).join('');
+        }
+
+        async function loadSettings() {
+            // Load trading status
+            const statusRes = await fetch('/api/trading/status');
+            const statusData = await statusRes.json();
+            const isLive = statusData.live_trading_enabled;
+            
+            document.getElementById('trading-status').textContent = isLive ? 'LIVE' : 'PAPER';
+            document.getElementById('trading-status').style.color = isLive ? '#f87171' : '#00d4aa';
+            
+            document.getElementById('trading-indicator').style.background = isLive ? '#f87171' : '#00d4aa';
+            document.getElementById('trading-text').textContent = isLive ? 'Live Trading Enabled' : 'Paper Trading Only';
+            document.getElementById('trading-text').style.color = isLive ? '#f87171' : '#00d4aa';
+            
+            // Load all settings
+            const settingsRes = await fetch('/api/settings');
+            const settingsData = await settingsRes.json();
+            
+            document.getElementById('settings-list').innerHTML = `
+                <table>
+                    <thead>
+                        <tr><th>Key</th><th>Value</th><th>Type</th><th>Updated</th></tr>
+                    </thead>
+                    <tbody>
+                        ${settingsData.settings.map(s => `
+                            <tr>
+                                <td><code>${s.key}</code></td>
+                                <td>${s.value}</td>
+                                <td>${s.value_type}</td>
+                                <td>${timeAgo(s.updated_at)}</td>
+                            </tr>
+                        `).join('') || '<tr><td colspan="4" style="text-align:center;color:#8892a0">No settings saved yet</td></tr>'}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        async function toggleTrading() {
+            const btn = document.getElementById('trading-toggle-btn');
+            btn.disabled = true;
+            btn.textContent = 'Toggling...';
+            
+            try {
+                const res = await fetch('/api/trading/toggle', { method: 'POST' });
+                const data = await res.json();
+                
+                const msgDiv = document.getElementById('trading-message');
+                msgDiv.style.display = 'block';
+                msgDiv.style.background = data.live_trading_enabled ? 'rgba(248, 113, 113, 0.1)' : 'rgba(0, 212, 170, 0.1)';
+                msgDiv.style.color = data.live_trading_enabled ? '#f87171' : '#00d4aa';
+                msgDiv.textContent = data.message;
+                
+                // Reload settings display
+                await loadSettings();
+                
+                setTimeout(() => {
+                    msgDiv.style.display = 'none';
+                }, 3000);
+            } catch (e) {
+                const msgDiv = document.getElementById('trading-message');
+                msgDiv.style.display = 'block';
+                msgDiv.style.background = 'rgba(248, 113, 113, 0.1)';
+                msgDiv.style.color = '#f87171';
+                msgDiv.textContent = 'Error: ' + e.message;
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Toggle Trading';
+            }
         }
 
         // Auto-refresh watchlist every 30s

@@ -586,7 +586,7 @@ Respond ONLY with valid JSON."""
                 token["basescan"] = basescan_info
 
             contract_info = await self.get_basescan_contract_creation(address)
-            if contract_info:
+            if contract_info and isinstance(contract_info, dict):
                 token["contract_creation"] = contract_info
                 deployer_address = contract_info.get("contractCreator")
 

@@ -123,7 +123,13 @@ class BaseScanClient:
         if contract_address:
             params["contractaddress"] = contract_address
         data = await self._get(params)
-        return data.get("result", [])
+        result = data.get("result", [])
+        # Handle string error responses (e.g., deprecated endpoint warnings)
+        if isinstance(result, str):
+            return []
+        if isinstance(result, list):
+            return [r for r in result if isinstance(r, dict)]
+        return []
 
     async def get_nft_transfers(
         self,
@@ -183,7 +189,13 @@ class BaseScanClient:
             "action": "getcontractcreation",
             "contractaddresses": ",".join(addresses),
         })
-        return data.get("result", [])
+        result = data.get("result", [])
+        # Handle string error responses
+        if isinstance(result, str):
+            return []
+        if isinstance(result, list):
+            return [r for r in result if isinstance(r, dict)]
+        return []
 
     # ── Transaction ────────────────────────────────────────────────────
 
