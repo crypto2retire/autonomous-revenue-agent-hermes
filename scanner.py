@@ -16,7 +16,7 @@ from basescan_client import get_basescan
 settings = get_settings()
 
 DEXSCREENER_BASE = "https://api.dexscreener.com"
-VENICE_BASE = "https://api.venice.ai/api/v1"
+DEEPSEEK_BASE = "https://api.deepseek.com/v1"
 
 
 class Scanner:
@@ -405,10 +405,10 @@ Respond ONLY with valid JSON."""
 
         try:
             resp = await self.http.post(
-                f"{VENICE_BASE}/chat/completions",
-                headers={"Authorization": f"Bearer {settings.venice_api_key.get_secret_value()}"},
+                f"{DEEPSEEK_BASE}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.deepseek_api_key.get_secret_value()}"},
                 json={
-                    "model": settings.venice_model,
+                    "model": settings.deepseek_model,
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.2,
                     "max_tokens": 800,

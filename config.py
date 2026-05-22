@@ -11,8 +11,14 @@ from pydantic import Field, SecretStr
 class Settings(BaseSettings):
     """Agent settings loaded from environment."""
 
-    # Venice AI
-    venice_api_key: SecretStr = Field(..., description="Venice AI API key")
+    # LLM Provider (DeepSeek)
+    llm_provider: str = Field(default="deepseek", description="LLM provider: deepseek or venice")
+    deepseek_api_key: SecretStr = Field(..., description="DeepSeek API key")
+    deepseek_model: str = "deepseek-v4-flash"
+    deepseek_base_url: str = "https://api.deepseek.com/v1"
+
+    # Venice AI (fallback)
+    venice_api_key: Optional[SecretStr] = None
     venice_model: str = "claude-opus-4.6"
     venice_base_url: str = "https://api.venice.ai/api/v1"
 
