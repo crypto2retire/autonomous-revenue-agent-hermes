@@ -1,4 +1,4 @@
-"""Token scanner — discovers coins via DexScreener and analyzes with Venice AI."""
+"""Token scanner — discovers coins via DexScreener, CoinGecko, and analyzes with Venice AI."""
 
 import asyncio
 import json
@@ -9,6 +9,7 @@ import httpx
 
 from config import get_settings
 from database import DB
+from coingecko_client import get_coingecko
 
 settings = get_settings()
 
@@ -22,9 +23,11 @@ class Scanner:
     def __init__(self):
         self.http = httpx.AsyncClient(timeout=30.0)
         self.running = False
+        self.cg = get_coingecko()
 
     async def close(self):
         await self.http.aclose()
+        await self.cg.close()
 
     # ── DexScreener API ──────────────────────────────────────────────
 
@@ -54,6 +57,96 @@ class Scanner:
         except Exception as e:
             await DB.log_event("error", "dexscreener_pairs_failed", str(e), {"token_address": token_address})
             return []
+
+    # ── CoinGecko API ────────────────────────────────────────────────
+
+    async def get_coingecko_trending(self) -> List[Dict[str, Any]]:
+        """Get trending coins from CoinGecko."""
+        try:
+            data = await self.cg.get_trending()
+            coins = []
+            for item in data.get("coins", []):
+                coin = item.get("item", {})
+                coins.append({
+                    "tokenAddress": coin.get("contract_address", ""),
+                    "symbol": coin.get("symbol", "UNKNOWN"),
+                    "name": coin.get("name", "Unknown"),
+                    "priceUsd": coin.get("data", {}).get("price", 0),
+                    "volume": {"h24": coin.get("data", {}).get("total_volume", 0)},
+                    "liquidity": {"usd": coin.get("data", {}).get("market_cap", 0)},
+                    "marketCap": coin.get("data", {}).get("market_cap", 0),
+                    "priceChange": {"h24": coin.get("data", {}).get("price_change_percentage_24h", {}).get("usd", 0)},
+                    "source": "coingecko_trending",
+                })
+            return coins
+        except Exception as e:
+            await DB.log_event("error", "coingecko_trending_failed", str(e))
+            return []
+
+    async def get_coingecko_gainers(self) -> List[Dict[str, Any]]:
+        """Get top gainers from CoinGecko."""
+        try:
+            data = await self.cg.get_top_gainers_losers()
+            coins = []
+            for item in data.get("top_gainers", [])[:20]:
+                coins.append({
+                    "tokenAddress": item.get("contract_address", ""),
+                    "symbol": item.get("symbol", "UNKNOWN"),
+                    "name": item.get("name", "Unknown"),
+                    "priceUsd": item.get("current_price", 0),
+                    "volume": {"h24": item.get("total_volume", 0)},
+                    "liquidity": {"usd": item.get("market_cap", 0)},
+                    "marketCap": item.get("market_cap", 0),
+                    "priceChange": {"h24": item.get("price_change_percentage_24h", 0)},
+                    "source": "coingecko_gainers",
+                })
+            return coins
+        except Exception as e:
+            await DB.log_event("error", "coingecko_gainers_failed", str(e))
+            return []
+
+    async def get_coingecko_new_coins(self) -> List[Dict[str, Any]]:
+        """Get newly listed coins from CoinGecko."""
+        try:
+            data = await self.cg.get_new_coins()
+            coins = []
+            for item in data[:20]:
+                coins.append({
+                    "tokenAddress": item.get("contract_address", ""),
+                    "symbol": item.get("symbol", "UNKNOWN"),
+                    "name": item.get("name", "Unknown"),
+                    "priceUsd": 0,
+                    "volume": {"h24": 0},
+                    "liquidity": {"usd": 0},
+                    "marketCap": 0,
+                    "priceChange": {"h24": 0},
+                    "source": "coingecko_new",
+                })
+            return coins
+        except Exception as e:
+            await DB.log_event("error", "coingecko_new_failed", str(e))
+            return []
+
+    async def get_coingecko_token_price(self, token_address: str, network: str = "base") -> Optional[float]:
+        """Get token price by contract address from CoinGecko."""
+        try:
+            data = await self.cg.get_onchain_token_price(network, token_address)
+            prices = data.get("data", {})
+            if prices:
+                # Return the first price found
+                for addr, info in prices.items():
+                    return float(info.get("usd", 0))
+        except Exception as e:
+            await DB.log_event("error", "coingecko_price_failed", str(e), {"token_address": token_address})
+        return None
+
+    async def get_coingecko_market_data(self, coin_id: str) -> Dict[str, Any]:
+        """Get detailed market data for a coin by CoinGecko ID."""
+        try:
+            return await self.cg.get_coin(coin_id)
+        except Exception as e:
+            await DB.log_event("error", "coingecko_market_failed", str(e), {"coin_id": coin_id})
+            return {}
 
     # ── Venice AI Analysis ───────────────────────────────────────────
 
@@ -151,64 +244,82 @@ Respond ONLY with valid JSON."""
         """Run one scan cycle: discover → analyze → persist."""
         await DB.log_event("info", "scan_started", f"Scanning {chain} chain")
 
-        # Step 1: Get trending token profiles
-        profiles = await self.get_trending(chain)
-        await DB.log_event("info", "tokens_discovered", f"Found {len(profiles)} token profiles", {"count": len(profiles)})
+        all_tokens: List[Dict[str, Any]] = []
 
-        for profile in profiles:
-            address = profile.get("tokenAddress", "")
+        # Source 1: DexScreener trending
+        dex_tokens = await self.get_trending(chain)
+        for t in dex_tokens:
+            t["source"] = "dexscreener"
+        all_tokens.extend(dex_tokens)
+
+        # Source 2: CoinGecko trending
+        cg_trending = await self.get_coingecko_trending()
+        all_tokens.extend(cg_trending)
+
+        # Source 3: CoinGecko gainers
+        cg_gainers = await self.get_coingecko_gainers()
+        all_tokens.extend(cg_gainers)
+
+        # Source 4: CoinGecko new coins
+        cg_new = await self.get_coingecko_new_coins()
+        all_tokens.extend(cg_new)
+
+        # Deduplicate by token address
+        seen = set()
+        unique_tokens = []
+        for t in all_tokens:
+            addr = t.get("tokenAddress", "")
+            if addr and addr not in seen:
+                seen.add(addr)
+                unique_tokens.append(t)
+
+        await DB.log_event("info", "tokens_discovered", f"Found {len(unique_tokens)} unique tokens", {"count": len(unique_tokens)})
+
+        for token in unique_tokens:
+            address = token.get("tokenAddress", "")
             if not address:
                 continue
 
-            # Step 2: Get detailed pair data for symbol, name, price, volume
-            pairs = await self.get_token_pairs(address, chain)
-            if not pairs:
-                continue
+            # Try to get price from CoinGecko if missing
+            if not token.get("priceUsd"):
+                cg_price = await self.get_coingecko_token_price(address, chain)
+                if cg_price:
+                    token["priceUsd"] = cg_price
 
-            # Use the pair with highest liquidity
-            best_pair = max(pairs, key=lambda p: float(p.get("liquidity", {}).get("usd", 0) or 0))
+            # For DexScreener tokens, get detailed pair data
+            if token.get("source") == "dexscreener":
+                pairs = await self.get_token_pairs(address, chain)
+                if pairs:
+                    best_pair = max(pairs, key=lambda p: float(p.get("liquidity", {}).get("usd", 0) or 0))
+                    base_token = best_pair.get("baseToken", {})
+                    token["symbol"] = base_token.get("symbol", token.get("symbol", "UNKNOWN"))
+                    token["name"] = base_token.get("name", token.get("name", "Unknown"))
+                    token["priceUsd"] = float(best_pair.get("priceUsd", 0) or 0)
+                    token["volume"] = {"h24": float(best_pair.get("volume", {}).get("h24", 0) or 0)}
+                    token["liquidity"] = {"usd": float(best_pair.get("liquidity", {}).get("usd", 0) or 0)}
+                    token["marketCap"] = float(best_pair.get("marketCap", 0) or 0)
+                    token["priceChange"] = {"h24": float(best_pair.get("priceChange", {}).get("h24", 0) or 0)}
 
-            # Extract token info from pair data
-            base_token = best_pair.get("baseToken", {})
-            symbol = base_token.get("symbol", "UNKNOWN")
-            name = base_token.get("name", symbol)
-            price = float(best_pair.get("priceUsd", 0) or 0)
-            volume_24h = float(best_pair.get("volume", {}).get("h24", 0) or 0)
-            liquidity = float(best_pair.get("liquidity", {}).get("usd", 0) or 0)
-            market_cap = float(best_pair.get("marketCap", 0) or 0)
-            price_change = float(best_pair.get("priceChange", {}).get("h24", 0) or 0)
+            # AI analysis
+            analysis = await self.analyze_opportunity(token)
 
-            # Build enriched token dict for AI analysis
-            enriched_token = {
-                "tokenAddress": address,
-                "symbol": symbol,
-                "name": name,
-                "priceUsd": price,
-                "volume": {"h24": volume_24h},
-                "liquidity": {"usd": liquidity},
-                "marketCap": market_cap,
-                "priceChange": {"h24": price_change},
-            }
-
-            # Step 3: AI analysis
-            analysis = await self.analyze_opportunity(enriched_token)
-
-            # Step 4: Persist to watchlist
+            # Persist to watchlist
             existing = await DB.get_coin(address)
             if existing:
                 await DB.update_coin_signal(address, analysis["signal"], analysis["confidence"])
             else:
                 await DB.add_coin(
                     token_address=address,
-                    symbol=symbol,
-                    name=name,
-                    price_at_discovery=price,
+                    symbol=token.get("symbol", "UNKNOWN"),
+                    name=token.get("name", "Unknown"),
+                    price_at_discovery=token.get("priceUsd", 0),
                     ai_score=analysis["confidence"],
                     signal=analysis["signal"],
                     metadata={
                         "reasoning": analysis["reasoning"],
                         "risk_level": analysis["risk_level"],
                         "tags": analysis["tags"],
+                        "source": token.get("source", "unknown"),
                     },
                 )
 
@@ -216,13 +327,13 @@ Respond ONLY with valid JSON."""
             if analysis["signal"] == "buy" and analysis["confidence"] > 0.7:
                 await DB.log_event(
                     "info", "strong_buy_signal",
-                    f"{symbol}: {analysis['reasoning']}",
-                    {"token_address": address, "symbol": symbol, "confidence": analysis["confidence"], "price": price},
+                    f"{token.get('symbol', 'UNKNOWN')}: {analysis['reasoning']}",
+                    {"token_address": address, "symbol": token.get("symbol", ""), "confidence": analysis["confidence"], "price": token.get("priceUsd", 0)},
                 )
 
             await asyncio.sleep(1)  # Rate limit between tokens
 
-        await DB.log_event("info", "scan_completed", f"Scanned {len(profiles)} tokens")
+        await DB.log_event("info", "scan_completed", f"Scanned {len(unique_tokens)} tokens")
 
     async def run(self):
         """Continuous scan loop."""

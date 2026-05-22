@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     basescan_api_key: Optional[SecretStr] = None
     wsic_api_key: Optional[SecretStr] = None
 
+    # CoinGecko
+    coingecko_api_key: Optional[SecretStr] = None
+    coingecko_plan: str = Field(default="demo", pattern="^(demo|pro)$")
+
     # Trading
     agent_mode: str = Field(default="paper", pattern="^(paper|live)$")
     min_trade_size_usd: float = 10.0
