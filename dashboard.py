@@ -345,11 +345,11 @@ async def dashboard():
                 <tr>
                     <td><strong>${c.symbol}</strong><br><small style="color:#8892a0">${c.name || ''}</small></td>
                     <td><span class="badge badge-${c.signal}">${c.signal?.toUpperCase()}</span></td>
-                    <td>${fmtNum(c.current_price || c.price_at_discovery, 6)}</td>
+                    <td>${fmtNum(c.last_price_usd || c.first_price_usd, 6)}</td>
                     <td>${fmtPct(c.price_change_pct)}</td>
-                    <td>${(c.ai_score * 100).toFixed(0)}%</td>
-                    <td>${c.scan_count}</td>
-                    <td>${timeAgo(c.last_updated)}</td>
+                    <td>${((c.confidence || 0) * 100).toFixed(0)}%</td>
+                    <td>${c.scan_count || 0}</td>
+                    <td>${timeAgo(c.last_seen_at)}</td>
                 </tr>
             `).join('');
         }
