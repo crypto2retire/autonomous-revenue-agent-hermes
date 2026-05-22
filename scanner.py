@@ -1,4 +1,4 @@
-"""Token scanner — discovers coins via DexScreener, CoinGecko, and analyzes with Venice AI."""
+"""Token scanner — discovers coins via DexScreener, CoinGecko, BaseScan, Dune, and analyzes with Venice AI."""
 
 import asyncio
 import json
@@ -37,20 +37,63 @@ class Scanner:
 
     # ── DexScreener API ──────────────────────────────────────────────
 
-    async def get_trending(self, chain: str = "base") -> List[Dict[str, Any]]:
+    async def get_trending_profiles(self, chain: str = "base") -> List[Dict[str, Any]]:
         """Get trending token profiles on a chain."""
         url = f"{DEXSCREENER_BASE}/token-profiles/latest/v1"
         try:
             resp = await self.http.get(url)
             resp.raise_for_status()
             data = resp.json()
-            # Filter by chain
             tokens = [
                 t for t in data if t.get("chainId", "").lower() == chain.lower()
             ]
             return tokens[:50]
         except Exception as e:
-            await DB.log_event("error", "dexscreener_trending_failed", str(e))
+            await DB.log_event("error", "dexscreener_profiles_failed", str(e))
+            return []
+
+    async def get_latest_pairs(self, chain: str = "base") -> List[Dict[str, Any]]:
+        """Get latest created pairs on a chain."""
+        url = f"{DEXSCREENER_BASE}/latest/dex/pairs/{chain}"
+        try:
+            resp = await self.http.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            pairs = data.get("pairs", [])
+            return pairs[:50]
+        except Exception as e:
+            await DB.log_event("error", "dexscreener_pairs_failed", str(e))
+            return []
+
+    async def get_top_pairs(self, chain: str = "base") -> List[Dict[str, Any]]:
+        """Get top pairs by volume on a chain."""
+        url = f"{DEXSCREENER_BASE}/latest/dex/pairs/{chain}"
+        try:
+            resp = await self.http.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            pairs = data.get("pairs", [])
+            # Sort by volume
+            pairs.sort(key=lambda p: float(p.get("volume", {}).get("h24", 0) or 0), reverse=True)
+            return pairs[:50]
+        except Exception as e:
+            await DB.log_event("error", "dexscreener_top_pairs_failed", str(e))
+            return []
+
+    async def search_pairs(self, query: str, chain: str = "base") -> List[Dict[str, Any]]:
+        """Search for pairs by token symbol/name."""
+        url = f"{DEXSCREENER_BASE}/latest/dex/search"
+        try:
+            resp = await self.http.get(url, params={"q": query})
+            resp.raise_for_status()
+            data = resp.json()
+            pairs = data.get("pairs", [])
+            # Filter by chain
+            if chain:
+                pairs = [p for p in pairs if p.get("chainId", "").lower() == chain.lower()]
+            return pairs[:30]
+        except Exception as e:
+            await DB.log_event("error", "dexscreener_search_failed", str(e))
             return []
 
     async def get_token_pairs(self, token_address: str, chain: str = "base") -> List[Dict[str, Any]]:
@@ -61,7 +104,7 @@ class Scanner:
             resp.raise_for_status()
             return resp.json()
         except Exception as e:
-            await DB.log_event("error", "dexscreener_pairs_failed", str(e), {"token_address": token_address})
+            await DB.log_event("error", "dexscreener_token_pairs_failed", str(e), {"token_address": token_address})
             return []
 
     # ── CoinGecko API ────────────────────────────────────────────────
@@ -87,6 +130,28 @@ class Scanner:
             return coins
         except Exception as e:
             await DB.log_event("error", "coingecko_trending_failed", str(e))
+            return []
+
+    async def get_coingecko_markets(self, per_page: int = 100) -> List[Dict[str, Any]]:
+        """Get top coins by market cap from CoinGecko."""
+        try:
+            data = await self.cg.get_coins_markets(vs_currency="usd", per_page=per_page, page=1)
+            coins = []
+            for item in data:
+                coins.append({
+                    "tokenAddress": item.get("contract_address", ""),
+                    "symbol": item.get("symbol", "UNKNOWN").upper(),
+                    "name": item.get("name", "Unknown"),
+                    "priceUsd": item.get("current_price", 0),
+                    "volume": {"h24": item.get("total_volume", 0)},
+                    "liquidity": {"usd": item.get("market_cap", 0)},
+                    "marketCap": item.get("market_cap", 0),
+                    "priceChange": {"h24": item.get("price_change_percentage_24h", 0)},
+                    "source": "coingecko_markets",
+                })
+            return coins
+        except Exception as e:
+            await DB.log_event("error", "coingecko_markets_failed", str(e))
             return []
 
     async def get_coingecko_gainers(self) -> List[Dict[str, Any]]:
@@ -149,7 +214,6 @@ class Scanner:
         """Get token price by contract address from CoinGecko."""
         try:
             data = await self.cg.get_onchain_token_price(network, token_address)
-            # Response format: {"data": {"0x...": {"usd": 123.45}}}
             price_data = data.get("data", {})
             if isinstance(price_data, dict):
                 for addr, info in price_data.items():
@@ -159,13 +223,30 @@ class Scanner:
             await DB.log_event("error", "coingecko_price_failed", str(e), {"token_address": token_address})
         return None
 
-    async def get_coingecko_market_data(self, coin_id: str) -> Dict[str, Any]:
-        """Get detailed market data for a coin by CoinGecko ID."""
+    async def get_coingecko_onchain_trending(self) -> List[Dict[str, Any]]:
+        """Get trending on-chain pools from CoinGecko."""
         try:
-            return await self.cg.get_coin(coin_id)
+            data = await self.cg.get_onchain_trending_pools()
+            pools = data.get("data", [])
+            coins = []
+            for pool in pools[:30]:
+                attributes = pool.get("attributes", {})
+                base_token = attributes.get("base_token", {})
+                coins.append({
+                    "tokenAddress": base_token.get("address", ""),
+                    "symbol": base_token.get("symbol", "UNKNOWN"),
+                    "name": base_token.get("name", "Unknown"),
+                    "priceUsd": float(attributes.get("base_token_price_usd", 0) or 0),
+                    "volume": {"h24": float(attributes.get("volume_usd", {}).get("h24", 0) or 0)},
+                    "liquidity": {"usd": float(attributes.get("reserve_usd", 0) or 0)},
+                    "marketCap": 0,
+                    "priceChange": {"h24": float(attributes.get("price_change_percentage", {}).get("h24", 0) or 0)},
+                    "source": "coingecko_onchain_trending",
+                })
+            return coins
         except Exception as e:
-            await DB.log_event("error", "coingecko_market_failed", str(e), {"coin_id": coin_id})
-            return {}
+            await DB.log_event("error", "coingecko_onchain_trending_failed", str(e))
+            return []
 
     # ── Dune Analytics ───────────────────────────────────────────────
 
@@ -173,7 +254,6 @@ class Scanner:
         """Get trending tokens from Dune Analytics queries."""
         try:
             # Query: Trending tokens on Base by volume (example query ID)
-            # You can replace this with your own Dune query IDs
             result = await self.dune.execute_and_wait(
                 query_id=12345,  # Replace with actual query ID for trending tokens
             )
@@ -194,19 +274,6 @@ class Scanner:
         except Exception as e:
             await DB.log_event("error", "dune_trending_failed", str(e))
             return []
-
-    async def get_dune_wallet_stats(self, wallet_address: str) -> Dict[str, Any]:
-        """Get on-chain stats for a wallet address from Dune."""
-        try:
-            result = await self.dune.execute_and_wait(
-                query_id=12346,  # Replace with actual query ID for wallet stats
-                parameters=[{"key": "wallet_address", "value": wallet_address}],
-            )
-            rows = result.get("result", {}).get("rows", [])
-            return rows[0] if rows else {}
-        except Exception as e:
-            await DB.log_event("error", "dune_wallet_failed", str(e), {"wallet": wallet_address})
-            return {}
 
     # ── BaseScan ──────────────────────────────────────────────────────
 
@@ -252,6 +319,33 @@ class Scanner:
         except Exception as e:
             await DB.log_event("error", "basescan_gas_failed", str(e))
             return {}
+
+    async def get_new_contracts_from_transfers(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Discover new contracts by looking at recent token transfers."""
+        try:
+            # Get recent token transfers for a known token to find new contracts
+            # This is a simplified approach - in production you'd use event logs
+            transfers = await self.basescan.get_token_transfers(
+                address="0x4200000000000000000000000000000000000006",  # WETH on Base
+                offset=limit,
+            )
+            # Extract unique contract addresses
+            seen = set()
+            contracts = []
+            for tx in transfers:
+                contract = tx.get("contractAddress", "")
+                if contract and contract not in seen:
+                    seen.add(contract)
+                    contracts.append({
+                        "tokenAddress": contract,
+                        "symbol": tx.get("tokenSymbol", "UNKNOWN"),
+                        "name": tx.get("tokenName", "Unknown"),
+                        "source": "basescan_transfers",
+                    })
+            return contracts
+        except Exception as e:
+            await DB.log_event("error", "basescan_new_contracts_failed", str(e))
+            return []
 
     # ── Venice AI Analysis ───────────────────────────────────────────
 
@@ -301,7 +395,6 @@ Respond ONLY with valid JSON."""
             # Extract JSON from markdown if needed
             content = content.strip()
             if "```" in content:
-                # Extract content between code fences
                 parts = content.split("```")
                 for part in parts:
                     part = part.strip()
@@ -315,7 +408,6 @@ Respond ONLY with valid JSON."""
             try:
                 analysis = json.loads(content.strip())
             except json.JSONDecodeError:
-                # Try to extract JSON using regex
                 import re
                 json_match = re.search(r'\{[\s\S]*\}', content)
                 if json_match:
@@ -351,27 +443,39 @@ Respond ONLY with valid JSON."""
 
         all_tokens: List[Dict[str, Any]] = []
 
-        # Source 1: DexScreener trending
-        dex_tokens = await self.get_trending(chain)
-        for t in dex_tokens:
-            t["source"] = "dexscreener"
-        all_tokens.extend(dex_tokens)
+        # Fetch from all sources concurrently
+        results = await asyncio.gather(
+            self.get_trending_profiles(chain),
+            self.get_latest_pairs(chain),
+            self.get_top_pairs(chain),
+            self.get_coingecko_trending(),
+            self.get_coingecko_markets(per_page=50),
+            self.get_coingecko_gainers(),
+            self.get_coingecko_new_coins(),
+            self.get_coingecko_onchain_trending(),
+            self.get_dune_trending_tokens(),
+            self.get_new_contracts_from_transfers(limit=30),
+            return_exceptions=True,
+        )
 
-        # Source 2: CoinGecko trending
-        cg_trending = await self.get_coingecko_trending()
-        all_tokens.extend(cg_trending)
+        # Process results
+        source_names = [
+            "dexscreener_profiles", "dexscreener_latest_pairs", "dexscreener_top_pairs",
+            "coingecko_trending", "coingecko_markets", "coingecko_gainers",
+            "coingecko_new", "coingecko_onchain_trending", "dune", "basescan_transfers"
+        ]
 
-        # Source 3: CoinGecko gainers
-        cg_gainers = await self.get_coingecko_gainers()
-        all_tokens.extend(cg_gainers)
-
-        # Source 4: CoinGecko new coins
-        cg_new = await self.get_coingecko_new_coins()
-        all_tokens.extend(cg_new)
-
-        # Source 5: Dune Analytics trending
-        dune_tokens = await self.get_dune_trending_tokens()
-        all_tokens.extend(dune_tokens)
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                await DB.log_event("error", f"{source_names[i]}_failed", str(result))
+            elif isinstance(result, list):
+                for token in result:
+                    if token.get("tokenAddress") or token.get("token_address"):
+                        # Normalize token address field
+                        if "token_address" in token and "tokenAddress" not in token:
+                            token["tokenAddress"] = token["token_address"]
+                        token["source"] = source_names[i]
+                        all_tokens.append(token)
 
         # Deduplicate by token address
         seen = set()
@@ -382,109 +486,115 @@ Respond ONLY with valid JSON."""
                 seen.add(addr)
                 unique_tokens.append(t)
 
-        await DB.log_event("info", "tokens_discovered", f"Found {len(unique_tokens)} unique tokens", {"count": len(unique_tokens)})
+        await DB.log_event("info", "tokens_discovered", f"Found {len(unique_tokens)} unique tokens from {len([r for r in results if not isinstance(r, Exception)])} sources", {"count": len(unique_tokens)})
 
-        for token in unique_tokens:
-            address = token.get("tokenAddress", "")
-            if not address:
-                continue
-
-            # Try to get price from CoinGecko if missing
-            if not token.get("priceUsd"):
-                cg_price = await self.get_coingecko_token_price(address, chain)
-                if cg_price:
-                    token["priceUsd"] = cg_price
-
-            # For DexScreener tokens, get detailed pair data
-            if token.get("source") == "dexscreener":
-                pairs = await self.get_token_pairs(address, chain)
-                if pairs:
-                    best_pair = max(pairs, key=lambda p: float(p.get("liquidity", {}).get("usd", 0) or 0))
-                    base_token = best_pair.get("baseToken", {})
-                    token["symbol"] = base_token.get("symbol", token.get("symbol", "UNKNOWN"))
-                    token["name"] = base_token.get("name", token.get("name", "Unknown"))
-                    token["priceUsd"] = float(best_pair.get("priceUsd", 0) or 0)
-                    token["volume"] = {"h24": float(best_pair.get("volume", {}).get("h24", 0) or 0)}
-                    token["liquidity"] = {"usd": float(best_pair.get("liquidity", {}).get("usd", 0) or 0)}
-                    token["marketCap"] = float(best_pair.get("marketCap", 0) or 0)
-                    token["priceChange"] = {"h24": float(best_pair.get("priceChange", {}).get("h24", 0) or 0)}
-
-            # Enrich with BaseScan data
-            basescan_info = await self.get_basescan_token_info(address)
-            if basescan_info:
-                token["name"] = basescan_info.get("name") or token.get("name", "Unknown")
-                token["symbol"] = basescan_info.get("symbol") or token.get("symbol", "UNKNOWN")
-                token["basescan"] = basescan_info
-
-            # Get contract creation date
-            contract_info = await self.get_basescan_contract_creation(address)
-            if contract_info:
-                token["contract_creation"] = contract_info
-
-            # Get deployer address
-            deployer_address = None
-            if contract_info and isinstance(contract_info, dict):
-                deployer_address = contract_info.get("contractCreator")
-
-            # Get top holders
-            holders = await self.get_basescan_token_holders(address, top_n=5)
-            if holders:
-                token["top_holders"] = holders
-
-            # AI analysis
-            analysis = await self.analyze_opportunity(token)
-
-            # Persist to watchlist with deployer tracking
-            existing = await DB.get_coin(address)
-            if existing:
-                await DB.update_coin_signal(address, analysis["signal"], analysis["confidence"])
-                # Record price history for long-term tracking
-                await DB.record_price_history(
-                    token_address=address,
-                    symbol=token.get("symbol", "UNKNOWN"),
-                    price_usd=token.get("priceUsd", 0),
-                    volume_24h=token.get("volume", {}).get("h24"),
-                    liquidity_usd=token.get("liquidity", {}).get("usd"),
-                    market_cap=token.get("marketCap"),
-                    signal=analysis["signal"],
-                    confidence=analysis["confidence"],
-                )
-            else:
-                await DB.add_coin(
-                    token_address=address,
-                    symbol=token.get("symbol", "UNKNOWN"),
-                    name=token.get("name", "Unknown"),
-                    price_at_discovery=token.get("priceUsd", 0),
-                    ai_score=analysis["confidence"],
-                    signal=analysis["signal"],
-                    deployer_address=deployer_address or "",
-                    discovery_source=token.get("source", "unknown"),
-                    extra_data={
-                        "reasoning": analysis["reasoning"],
-                        "risk_level": analysis["risk_level"],
-                        "tags": analysis["tags"],
-                        "source": token.get("source", "unknown"),
-                        "basescan": basescan_info,
-                        "contract_creation": contract_info,
-                        "top_holders": holders,
-                    },
-                )
-                
-                # Update deployer stats
-                if deployer_address:
-                    await DB.update_deployer_stats(deployer_address)
-
-            # Log significant signals
-            if analysis["signal"] == "buy" and analysis["confidence"] > 0.7:
-                await DB.log_event(
-                    "info", "strong_buy_signal",
-                    f"{token.get('symbol', 'UNKNOWN')}: {analysis['reasoning']}",
-                    {"token_address": address, "symbol": token.get("symbol", ""), "confidence": analysis["confidence"], "price": token.get("priceUsd", 0)},
-                )
-
-            await asyncio.sleep(1)  # Rate limit between tokens
+        # Process tokens concurrently in batches
+        batch_size = 5
+        for i in range(0, len(unique_tokens), batch_size):
+            batch = unique_tokens[i:i + batch_size]
+            await asyncio.gather(*[self._process_token(token, chain) for token in batch])
+            await asyncio.sleep(0.5)  # Small delay between batches
 
         await DB.log_event("info", "scan_completed", f"Scanned {len(unique_tokens)} tokens")
+
+    async def _process_token(self, token: Dict[str, Any], chain: str = "base"):
+        """Process a single token: enrich, analyze, persist."""
+        address = token.get("tokenAddress", "")
+        if not address:
+            return
+
+        # Try to get price from CoinGecko if missing
+        if not token.get("priceUsd"):
+            cg_price = await self.get_coingecko_token_price(address, chain)
+            if cg_price:
+                token["priceUsd"] = cg_price
+
+        # For DexScreener tokens, get detailed pair data
+        if token.get("source", "").startswith("dexscreener"):
+            pairs = await self.get_token_pairs(address, chain)
+            if pairs:
+                best_pair = max(pairs, key=lambda p: float(p.get("liquidity", {}).get("usd", 0) or 0))
+                base_token = best_pair.get("baseToken", {})
+                token["symbol"] = base_token.get("symbol", token.get("symbol", "UNKNOWN"))
+                token["name"] = base_token.get("name", token.get("name", "Unknown"))
+                token["priceUsd"] = float(best_pair.get("priceUsd", 0) or 0)
+                token["volume"] = {"h24": float(best_pair.get("volume", {}).get("h24", 0) or 0)}
+                token["liquidity"] = {"usd": float(best_pair.get("liquidity", {}).get("usd", 0) or 0)}
+                token["marketCap"] = float(best_pair.get("marketCap", 0) or 0)
+                token["priceChange"] = {"h24": float(best_pair.get("priceChange", {}).get("h24", 0) or 0)}
+
+        # Enrich with BaseScan data
+        basescan_info = await self.get_basescan_token_info(address)
+        if basescan_info:
+            token["name"] = basescan_info.get("name") or token.get("name", "Unknown")
+            token["symbol"] = basescan_info.get("symbol") or token.get("symbol", "UNKNOWN")
+            token["basescan"] = basescan_info
+
+        # Get contract creation date
+        contract_info = await self.get_basescan_contract_creation(address)
+        if contract_info:
+            token["contract_creation"] = contract_info
+
+        # Get deployer address
+        deployer_address = None
+        if contract_info and isinstance(contract_info, dict):
+            deployer_address = contract_info.get("contractCreator")
+
+        # Get top holders
+        holders = await self.get_basescan_token_holders(address, top_n=5)
+        if holders:
+            token["top_holders"] = holders
+
+        # AI analysis
+        analysis = await self.analyze_opportunity(token)
+
+        # Persist to watchlist with deployer tracking
+        existing = await DB.get_coin(address)
+        if existing:
+            await DB.update_coin_signal(address, analysis["signal"], analysis["confidence"])
+            # Record price history for long-term tracking
+            await DB.record_price_history(
+                token_address=address,
+                symbol=token.get("symbol", "UNKNOWN"),
+                price_usd=token.get("priceUsd", 0),
+                volume_24h=token.get("volume", {}).get("h24"),
+                liquidity_usd=token.get("liquidity", {}).get("usd"),
+                market_cap=token.get("marketCap") or 0,
+                signal=analysis["signal"],
+                confidence=analysis["confidence"],
+            )
+        else:
+            await DB.add_coin(
+                token_address=address,
+                symbol=token.get("symbol", "UNKNOWN"),
+                name=token.get("name", "Unknown"),
+                price_at_discovery=token.get("priceUsd", 0),
+                ai_score=analysis["confidence"],
+                signal=analysis["signal"],
+                deployer_address=deployer_address or "",
+                discovery_source=token.get("source", "unknown"),
+                extra_data={
+                    "reasoning": analysis["reasoning"],
+                    "risk_level": analysis["risk_level"],
+                    "tags": analysis["tags"],
+                    "source": token.get("source", "unknown"),
+                    "basescan": basescan_info,
+                    "contract_creation": contract_info,
+                    "top_holders": holders,
+                },
+            )
+            
+            # Update deployer stats
+            if deployer_address:
+                await DB.update_deployer_stats(deployer_address)
+
+        # Log significant signals
+        if analysis["signal"] == "buy" and analysis["confidence"] > 0.7:
+            await DB.log_event(
+                "info", "strong_buy_signal",
+                f"{token.get('symbol', 'UNKNOWN')}: {analysis['reasoning']}",
+                {"token_address": address, "symbol": token.get("symbol", ""), "confidence": analysis["confidence"], "price": token.get("priceUsd", 0)},
+            )
 
     async def run(self):
         """Continuous scan loop."""

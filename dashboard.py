@@ -45,8 +45,32 @@ async def get_coins(
     bullish = sum(1 for c in coins if c.signal == "bullish")
     bearish = sum(1 for c in coins if c.signal == "bearish")
     avoid = sum(1 for c in coins if c.signal == "avoid")
+    hold = sum(1 for c in coins if c.signal == "hold")
     rugged = sum(1 for c in coins if c.is_rugged)
-    top_gainer = max((c.price_change_pct for c in coins if c.price_change_pct is not None), default=0)
+    
+    # Calculate average confidence
+    avg_confidence = 0.0
+    if total > 0:
+        conf_sum = 0.0
+        for c in coins:
+            cv = c.confidence
+            try:
+                if cv is not None:
+                    conf_sum += float(str(cv))
+            except (TypeError, ValueError):
+                pass
+        avg_confidence = conf_sum / total
+    
+    # Get top gainer
+    top_gainer = None
+    top_gain_pct = 0.0
+    for c in coins:
+        pg = c.peak_gain_pct
+        if pg is not None:
+            pct = float(pg)
+            if pct > top_gain_pct:
+                top_gain_pct = pct
+                top_gainer = c
     
     stats = {
         "total_coins": total,
@@ -55,8 +79,11 @@ async def get_coins(
         "bullish_signals": bullish,
         "bearish_signals": bearish,
         "avoid_signals": avoid,
+        "hold_signals": hold,
         "rugged_coins": rugged,
-        "top_gainer_pct": top_gainer,
+        "avg_confidence": round(avg_confidence, 2),
+        "top_gainer_symbol": top_gainer.symbol if top_gainer else None,
+        "top_gainer_pct": round(top_gain_pct, 2) if top_gainer else 0,
     }
     return {
         "coins": [c.to_dict() for c in coins],
@@ -202,6 +229,7 @@ async def dashboard():
     <title>Crypto Trading Agent</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -214,6 +242,7 @@ async def dashboard():
         .tabs {
             display: flex; gap: 5px; margin-bottom: 20px;
             border-bottom: 1px solid #1a2332; padding-bottom: 10px;
+            flex-wrap: wrap;
         }
         .tab {
             padding: 10px 20px; cursor: pointer; border-radius: 6px 6px 0 0;
@@ -225,15 +254,15 @@ async def dashboard():
         .panel { display: none; }
         .panel.active { display: block; }
         .stats-grid {
-            display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
             gap: 15px; margin-bottom: 20px;
         }
         .stat-card {
             background: #111827; border: 1px solid #1a2332; border-radius: 8px;
             padding: 15px; text-align: center;
         }
-        .stat-value { font-size: 1.6rem; font-weight: 700; color: #00d4aa; }
-        .stat-label { font-size: 0.85rem; color: #8892a0; margin-top: 5px; }
+        .stat-value { font-size: 1.5rem; font-weight: 700; color: #00d4aa; }
+        .stat-label { font-size: 0.8rem; color: #8892a0; margin-top: 5px; }
         table {
             width: 100%; border-collapse: collapse; background: #111827;
             border-radius: 8px; overflow: hidden; font-size: 0.9rem;
@@ -266,6 +295,10 @@ async def dashboard():
             background: #00d4aa; color: #0a0e1a; font-weight: 600; cursor: pointer;
         }
         .btn:hover { background: #00b894; }
+        .btn-secondary {
+            background: #1a2332; color: #e0e6ed; border: 1px solid #2d3748;
+        }
+        .btn-secondary:hover { background: #2d3748; }
         .filters { display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; }
         .filters select, .filters input {
             padding: 6px 10px; border-radius: 4px; border: 1px solid #1a2332;
@@ -277,10 +310,33 @@ async def dashboard():
         }
         .deployer-info h3 { color: #00d4aa; margin-bottom: 10px; }
         .deployer-info p { margin: 5px 0; }
+        .coin-detail {
+            background: #111827; border: 1px solid #1a2332; border-radius: 8px;
+            padding: 20px; margin-bottom: 20px;
+        }
+        .coin-detail h2 { color: #00d4aa; margin-bottom: 15px; }
+        .coin-detail .info-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px; margin-bottom: 20px;
+        }
+        .coin-detail .info-item { 
+            background: #0d1117; padding: 10px; border-radius: 6px;
+        }
+        .coin-detail .info-label { color: #8892a0; font-size: 0.8rem; }
+        .coin-detail .info-value { font-size: 1.1rem; font-weight: 600; }
+        .chart-container {
+            background: #111827; border: 1px solid #1a2332; border-radius: 8px;
+            padding: 20px; margin-bottom: 20px;
+            height: 400px;
+        }
+        .back-btn {
+            margin-bottom: 15px;
+        }
         @media (max-width: 768px) {
             .stats-grid { grid-template-columns: repeat(2, 1fr); }
             table { font-size: 0.8rem; }
             th, td { padding: 8px; }
+            .chart-container { height: 300px; }
         }
     </style>
 </head>
@@ -291,9 +347,10 @@ async def dashboard():
 
         <div class="tabs">
             <div class="tab active" onclick="showTab('watchlist')">📊 Watchlist</div>
+            <div class="tab" onclick="showTab('market')">📈 Market</div>
             <div class="tab" onclick="showTab('deployers')">👤 Deployers</div>
             <div class="tab" onclick="showTab('trades')">💰 Trades</div>
-            <div class="tab" onclick="showTab('performance')">📈 Performance</div>
+            <div class="tab" onclick="showTab('performance')">📊 Performance</div>
             <div class="tab" onclick="showTab('logs')">📝 Logs</div>
         </div>
 
@@ -334,6 +391,58 @@ async def dashboard():
                     </tr>
                 </thead>
                 <tbody id="watchlist-body"></tbody>
+            </table>
+        </div>
+
+        <!-- Market Panel -->
+        <div class="panel" id="market-panel">
+            <div class="refresh-bar">
+                <span>Market Overview</span>
+                <button class="btn" onclick="loadMarket()">Refresh</button>
+            </div>
+            <div class="stats-grid" id="market-stats"></div>
+            
+            <h3 style="margin: 20px 0 10px; color: #00d4aa;">🔥 Top Gainers</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Price</th>
+                        <th>Peak Gain</th>
+                        <th>Signal</th>
+                        <th>AI Score</th>
+                        <th>Source</th>
+                    </tr>
+                </thead>
+                <tbody id="market-gainers-body"></tbody>
+            </table>
+            
+            <h3 style="margin: 20px 0 10px; color: #f87171;">📉 Top Losers</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Price</th>
+                        <th>Change</th>
+                        <th>Signal</th>
+                        <th>AI Score</th>
+                    </tr>
+                </thead>
+                <tbody id="market-losers-body"></tbody>
+            </table>
+            
+            <h3 style="margin: 20px 0 10px; color: #60a5fa;">📊 Trending (Most Scanned)</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Scans</th>
+                        <th>Price</th>
+                        <th>Signal</th>
+                        <th>AI Score</th>
+                    </tr>
+                </thead>
+                <tbody id="market-trending-body"></tbody>
             </table>
         </div>
 
@@ -420,6 +529,12 @@ async def dashboard():
                 <tbody id="logs-body"></tbody>
             </table>
         </div>
+
+        <!-- Coin Detail Panel -->
+        <div class="panel" id="coin-detail-panel">
+            <button class="btn btn-secondary back-btn" onclick="showTab('watchlist')">← Back to Watchlist</button>
+            <div id="coin-detail-content"></div>
+        </div>
     </div>
 
     <script>
@@ -429,6 +544,7 @@ async def dashboard():
             event.target.classList.add('active');
             document.getElementById(name + '-panel').classList.add('active');
             if (name === 'watchlist') loadWatchlist();
+            if (name === 'market') loadMarket();
             if (name === 'deployers') loadDeployers();
             if (name === 'trades') loadTrades();
             if (name === 'performance') loadPerformance();
@@ -481,22 +597,234 @@ async def dashboard():
                 <div class="stat-card"><div class="stat-value">${stats.total_coins || 0}</div><div class="stat-label">Total Coins</div></div>
                 <div class="stat-card"><div class="stat-value">${stats.buy_signals || 0}</div><div class="stat-label">Buy Signals</div></div>
                 <div class="stat-card"><div class="stat-value">${stats.avoid_signals || 0}</div><div class="stat-label">Avoid</div></div>
+                <div class="stat-card"><div class="stat-value">${stats.hold_signals || 0}</div><div class="stat-label">Hold</div></div>
                 <div class="stat-card"><div class="stat-value">${stats.rugged_coins || 0}</div><div class="stat-label">Rugged</div></div>
+                <div class="stat-card"><div class="stat-value">${(stats.avg_confidence || 0).toFixed(0)}%</div><div class="stat-label">Avg Confidence</div></div>
             `;
 
             const tbody = document.getElementById('watchlist-body');
             tbody.innerHTML = data.coins.map(c => `
-                <tr>
+                <tr style="cursor:pointer" onclick="showCoinDetail('${c.token_address}')">
                     <td><strong>${c.symbol}</strong><br><small style="color:#8892a0">${c.name || ''}</small></td>
                     <td><span class="badge badge-${c.signal}">${c.signal?.toUpperCase()}</span></td>
                     <td>${fmtNum(c.last_price_usd || c.first_price_usd, 6)}</td>
                     <td>${fmtPct(c.peak_gain_pct)}</td>
                     <td>${((c.confidence || 0) * 100).toFixed(0)}%</td>
                     <td>${c.scan_count || 0}</td>
-                    <td>${c.deployer_address ? `<a href="#" onclick="showDeployer('${c.deployer_address}');return false">${shortAddr(c.deployer_address)}</a>` : '-'}</td>
+                    <td>${c.deployer_address ? `<a href="#" onclick="event.stopPropagation();showDeployer('${c.deployer_address}');return false">${shortAddr(c.deployer_address)}</a>` : '-'}</td>
                     <td>${timeAgo(c.last_seen_at)}</td>
                 </tr>
             `).join('');
+        }
+
+        async function showCoinDetail(tokenAddress) {
+            const res = await fetch('/api/coins/' + tokenAddress);
+            const data = await res.json();
+            
+            if (data.error) {
+                alert(data.error);
+                return;
+            }
+            
+            const coin = data.coin;
+            const history = data.price_history;
+            
+            // Switch to detail panel
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+            document.getElementById('coin-detail-panel').classList.add('active');
+            
+            // Build detail HTML
+            const detailHtml = `
+                <div class="coin-detail">
+                    <h2>${coin.symbol} — ${coin.name}</h2>
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <div class="info-label">Signal</div>
+                            <div class="info-value"><span class="badge badge-${coin.signal}">${coin.signal?.toUpperCase()}</span></div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">AI Confidence</div>
+                            <div class="info-value">${((coin.confidence || 0) * 100).toFixed(0)}%</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Current Price</div>
+                            <div class="info-value">${fmtNum(coin.last_price_usd, 6)}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Discovery Price</div>
+                            <div class="info-value">${fmtNum(coin.first_price_usd, 6)}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Peak Gain</div>
+                            <div class="info-value">${fmtPct(coin.peak_gain_pct)}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Peak Loss</div>
+                            <div class="info-value">${fmtPct(coin.peak_loss_pct)}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Volume 24h</div>
+                            <div class="info-value">${fmtNum(coin.volume_24h)}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Liquidity</div>
+                            <div class="info-value">${fmtNum(coin.liquidity_usd)}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Market Cap</div>
+                            <div class="info-value">${fmtNum(coin.market_cap)}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Discovery Source</div>
+                            <div class="info-value">${coin.discovery_source || 'Unknown'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Scans</div>
+                            <div class="info-value">${coin.scan_count || 0}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">First Seen</div>
+                            <div class="info-value">${timeAgo(coin.first_seen_at)}</div>
+                        </div>
+                    </div>
+                    
+                    ${coin.ai_analysis ? `<div style="margin-top: 15px; padding: 15px; background: #0d1117; border-radius: 6px;">
+                        <div class="info-label">AI Analysis</div>
+                        <div style="margin-top: 8px; white-space: pre-wrap;">${coin.ai_analysis}</div>
+                    </div>` : ''}
+                </div>
+                
+                ${history.length > 0 ? `
+                <div class="chart-container">
+                    <canvas id="priceChart"></canvas>
+                </div>
+                ` : '<div style="text-align: center; padding: 40px; color: #8892a0;">No price history available yet</div>'}
+                
+                ${data.deployer ? `
+                <div class="deployer-info">
+                    <h3>👤 Deployer</h3>
+                    <p><strong>Address:</strong> ${data.deployer.address}</p>
+                    <p><strong>Reputation:</strong> <span class="badge badge-${data.deployer.reputation}">${data.deployer.reputation?.toUpperCase()}</span></p>
+                    <p><strong>Score:</strong> ${((data.deployer.reputation_score || 0) * 100).toFixed(0)}%</p>
+                    <p><strong>Tokens Deployed:</strong> ${data.deployer.total_tokens_deployed || 0}</p>
+                    <p><strong>Successful:</strong> ${data.deployer.successful_tokens || 0}</p>
+                    <p><strong>Rugged:</strong> ${data.deployer.rugged_tokens || 0}</p>
+                </div>
+                ` : ''}
+                
+                ${data.deployer_coins?.length > 0 ? `
+                <h3 style="margin: 20px 0 10px; color: #00d4aa;">Other Coins from Same Deployer</h3>
+                <table>
+                    <thead>
+                        <tr><th>Symbol</th><th>Signal</th><th>Price</th><th>Peak Gain</th></tr>
+                    </thead>
+                    <tbody>
+                        ${data.deployer_coins.map(c => `
+                            <tr>
+                                <td><strong>${c.symbol}</strong></td>
+                                <td><span class="badge badge-${c.signal}">${c.signal?.toUpperCase()}</span></td>
+                                <td>${fmtNum(c.last_price_usd, 6)}</td>
+                                <td>${fmtPct(c.peak_gain_pct)}</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+                ` : ''}
+            `;
+            
+            document.getElementById('coin-detail-content').innerHTML = detailHtml;
+            
+            // Render chart if we have history
+            if (history.length > 0) {
+                const ctx = document.getElementById('priceChart').getContext('2d');
+                new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: history.map(h => new Date(h.created_at).toLocaleDateString()),
+                        datasets: [{
+                            label: 'Price (USD)',
+                            data: history.map(h => h.price_usd),
+                            borderColor: '#00d4aa',
+                            backgroundColor: 'rgba(0, 212, 170, 0.1)',
+                            fill: true,
+                            tension: 0.4,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: false },
+                            title: { display: true, text: 'Price History', color: '#e0e6ed' }
+                        },
+                        scales: {
+                            x: { ticks: { color: '#8892a0' }, grid: { color: '#1a2332' } },
+                            y: { ticks: { color: '#8892a0' }, grid: { color: '#1a2332' } }
+                        }
+                    }
+                });
+            }
+        }
+
+        async function loadMarket() {
+            // Load all market data concurrently
+            const [gainersRes, losersRes, trendingRes, coinsRes] = await Promise.all([
+                fetch('/api/coins/gainers?limit=10'),
+                fetch('/api/coins/losers?limit=10'),
+                fetch('/api/coins/trending?limit=10'),
+                fetch('/api/coins?limit=1'),
+            ]);
+            
+            const gainers = await gainersRes.json();
+            const losers = await losersRes.json();
+            const trending = await trendingRes.json();
+            const coins = await coinsRes.json();
+            
+            // Market stats
+            const stats = coins.stats || {};
+            document.getElementById('market-stats').innerHTML = `
+                <div class="stat-card"><div class="stat-value">${stats.total_coins || 0}</div><div class="stat-label">Total Tracked</div></div>
+                <div class="stat-card"><div class="stat-value">${stats.buy_signals || 0}</div><div class="stat-label">Buy Signals</div></div>
+                <div class="stat-card"><div class="stat-value">${stats.bullish_signals || 0}</div><div class="stat-label">Bullish</div></div>
+                <div class="stat-card"><div class="stat-value">${stats.avoid_signals || 0}</div><div class="stat-label">Avoid</div></div>
+                <div class="stat-card"><div class="stat-value">${stats.rugged_coins || 0}</div><div class="stat-label">Rugged</div></div>
+                <div class="stat-card"><div class="stat-value">${stats.top_gainer_symbol || '-'}</div><div class="stat-label">Top Gainer</div></div>
+            `;
+            
+            // Gainers
+            document.getElementById('market-gainers-body').innerHTML = (gainers.coins || []).map(c => `
+                <tr style="cursor:pointer" onclick="showCoinDetail('${c.token_address}')">
+                    <td><strong>${c.symbol}</strong><br><small style="color:#8892a0">${c.name || ''}</small></td>
+                    <td>${fmtNum(c.last_price_usd, 6)}</td>
+                    <td class="positive">+${(c.peak_gain_pct || 0).toFixed(2)}%</td>
+                    <td><span class="badge badge-${c.signal}">${c.signal?.toUpperCase()}</span></td>
+                    <td>${((c.confidence || 0) * 100).toFixed(0)}%</td>
+                    <td>${c.discovery_source || 'Unknown'}</td>
+                </tr>
+            `).join('') || '<tr><td colspan="6" style="text-align:center;color:#8892a0">No gainers yet</td></tr>';
+            
+            // Losers
+            document.getElementById('market-losers-body').innerHTML = (losers.coins || []).map(c => `
+                <tr style="cursor:pointer" onclick="showCoinDetail('${c.token_address}')">
+                    <td><strong>${c.symbol}</strong><br><small style="color:#8892a0">${c.name || ''}</small></td>
+                    <td>${fmtNum(c.last_price_usd, 6)}</td>
+                    <td class="negative">${(c.price_change_pct || 0).toFixed(2)}%</td>
+                    <td><span class="badge badge-${c.signal}">${c.signal?.toUpperCase()}</span></td>
+                    <td>${((c.confidence || 0) * 100).toFixed(0)}%</td>
+                </tr>
+            `).join('') || '<tr><td colspan="5" style="text-align:center;color:#8892a0">No losers yet</td></tr>';
+            
+            // Trending
+            document.getElementById('market-trending-body').innerHTML = (trending.coins || []).map(c => `
+                <tr style="cursor:pointer" onclick="showCoinDetail('${c.token_address}')">
+                    <td><strong>${c.symbol}</strong><br><small style="color:#8892a0">${c.name || ''}</small></td>
+                    <td>${c.scan_count || 0}</td>
+                    <td>${fmtNum(c.last_price_usd, 6)}</td>
+                    <td><span class="badge badge-${c.signal}">${c.signal?.toUpperCase()}</span></td>
+                    <td>${((c.confidence || 0) * 100).toFixed(0)}%</td>
+                </tr>
+            `).join('') || '<tr><td colspan="5" style="text-align:center;color:#8892a0">No trending coins yet</td></tr>';
         }
 
         async function loadDeployers() {
@@ -520,10 +848,9 @@ async def dashboard():
                 <div class="stat-card"><div class="stat-value">${rugger}</div><div class="stat-label">Ruggers</div></div>
             `;
 
-            const tbody = document.getElementById('deployers-body');
-            tbody.innerHTML = data.deployers.map(d => `
+            document.getElementById('deployers-body').innerHTML = data.deployers.map(d => `
                 <tr>
-                    <td><strong>${shortAddr(d.address)}</strong></td>
+                    <td><code>${shortAddr(d.address)}</code></td>
                     <td><span class="badge badge-${d.reputation}">${d.reputation?.toUpperCase()}</span></td>
                     <td>${((d.reputation_score || 0) * 100).toFixed(0)}%</td>
                     <td>${d.total_tokens_deployed || 0}</td>
@@ -535,12 +862,14 @@ async def dashboard():
         }
 
         async function showDeployer(address) {
-            // Switch to deployers tab and filter
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-            event.target.classList.add('active');
-            document.getElementById('deployers-panel').classList.add('active');
-            loadDeployers();
+            // For now, just alert - could expand to show deployer detail page
+            const res = await fetch('/api/deployers/' + address);
+            const data = await res.json();
+            if (data.error) {
+                alert('Deployer not found');
+                return;
+            }
+            alert(`Deployer: ${shortAddr(address)}\\nReputation: ${data.deployer.reputation}\\nTokens: ${data.deployer.total_tokens_deployed}\\nSuccess: ${data.deployer.successful_tokens}\\nRugs: ${data.deployer.rugged_tokens}`);
         }
 
         async function loadTrades() {
@@ -550,31 +879,32 @@ async def dashboard():
 
             document.getElementById('trades-body').innerHTML = data.trades.map(t => `
                 <tr>
-                    <td>${t.symbol}</td>
-                    <td>${t.side?.toUpperCase()}</td>
-                    <td>${fmtNum(t.amount)}</td>
-                    <td>${fmtNum(t.price, 6)}</td>
-                    <td>${fmtNum(t.total_value)}</td>
-                    <td>${t.trade_type}</td>
-                    <td><span class="badge badge-${t.status === 'completed' ? 'buy' : 'avoid'}">${t.status}</span></td>
+                    <td><strong>${t.symbol || '?'}</strong></td>
+                    <td><span class="badge badge-${t.side === 'buy' ? 'buy' : 'sell'}">${t.side?.toUpperCase()}</span></td>
+                    <td>${fmtNum(t.amount_usd)}</td>
+                    <td>${fmtNum(t.entry_price, 6)}</td>
+                    <td>${fmtNum(t.amount_token)}</td>
+                    <td>${t.is_paper ? 'Paper' : 'Live'}</td>
+                    <td><span class="badge badge-${t.status}">${t.status?.toUpperCase()}</span></td>
                     <td>${timeAgo(t.created_at)}</td>
                 </tr>
-            `).join('');
+            `).join('') || '<tr><td colspan="8" style="text-align:center;color:#8892a0">No trades yet</td></tr>';
         }
 
         async function loadPerformance() {
-            const res = await fetch('/api/performance?hours=24');
+            const res = await fetch('/api/performance');
             const data = await res.json();
-            const s = data.summary;
+            const s = data.summary || {};
+
             document.getElementById('performance-stats').innerHTML = `
-                <div class="stat-card"><div class="stat-value">${fmtNum(s.current_balance)}</div><div class="stat-label">Current Balance</div></div>
-                <div class="stat-card"><div class="stat-value">${s.total_trades || 0}</div><div class="stat-label">Total Trades</div></div>
-                <div class="stat-card"><div class="stat-value">${s.buy_trades || 0}</div><div class="stat-label">Buys</div></div>
-                <div class="stat-card"><div class="stat-value">${s.sell_trades || 0}</div><div class="stat-label">Sells</div></div>
-                <div class="stat-card"><div class="stat-value">${fmtNum(s.total_volume)}</div><div class="stat-label">Total Volume</div></div>
+                <div class="stat-card"><div class="stat-value">${fmtNum(s.current_balance)}</div><div class="stat-label">Balance</div></div>
                 <div class="stat-card"><div class="stat-value">${s.total_coins_scanned || 0}</div><div class="stat-label">Coins Scanned</div></div>
+                <div class="stat-card"><div class="stat-value">${s.bullish_signals || 0}</div><div class="stat-label">Bullish</div></div>
+                <div class="stat-card"><div class="stat-value">${s.bearish_signals || 0}</div><div class="stat-label">Bearish</div></div>
                 <div class="stat-card"><div class="stat-value">${s.total_deployers || 0}</div><div class="stat-label">Deployers</div></div>
                 <div class="stat-card"><div class="stat-value">${s.trusted_deployers || 0}</div><div class="stat-label">Trusted</div></div>
+                <div class="stat-card"><div class="stat-value">${s.total_trades || 0}</div><div class="stat-label">Total Trades</div></div>
+                <div class="stat-card"><div class="stat-value">${s.buy_trades || 0}</div><div class="stat-label">Buys</div></div>
             `;
         }
 
