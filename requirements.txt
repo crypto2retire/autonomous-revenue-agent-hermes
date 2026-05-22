@@ -7,3 +7,4 @@ aiosqlite
 pydantic
 pydantic-settings
 python-dotenv
+web3
