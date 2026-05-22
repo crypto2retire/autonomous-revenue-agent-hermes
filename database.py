@@ -145,7 +145,7 @@ class DB:
         price_at_discovery: float,
         ai_score: float = 0.0,
         signal: str = "neutral",
-        metadata: dict = None,
+        extra_data: dict = None,
         deployer_address: str = None,
         discovery_source: str = "unknown",
     ) -> CoinWatch:
@@ -172,10 +172,10 @@ class DB:
                 lowest_price_since_discovery=price_at_discovery,
                 confidence=ai_score,
                 signal=signal,
-                ai_analysis=str(metadata) if metadata else None,
+                ai_analysis=str(extra_data) if extra_data else None,
                 deployer_address=deployer_address,
                 discovery_source=discovery_source,
-                metadata=metadata,
+                extra_data=extra_data,
             )
             session.add(coin)
             await session.commit()

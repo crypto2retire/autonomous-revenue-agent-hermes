@@ -137,7 +137,7 @@ class CoinWatch(Base):
     discovery_source = Column(String(50))  # dexscreener, coingecko, dune, manual
     
     # Metadata (JSON for flexibility)
-    metadata = Column(JSON)
+    extra_data = Column(JSON)
 
     __table_args__ = (
         Index("idx_coin_watch_symbol", "symbol"),
@@ -179,7 +179,7 @@ class CoinWatch(Base):
             "rugged_at": self.rugged_at.isoformat() if self.rugged_at else None,
             "is_abandoned": self.is_abandoned,
             "discovery_source": self.discovery_source,
-            "metadata": self.metadata,
+            "extra_data": self.extra_data,
         }
 
 

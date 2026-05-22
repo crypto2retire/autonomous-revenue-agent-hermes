@@ -457,7 +457,9 @@ Respond ONLY with valid JSON."""
                     price_at_discovery=token.get("priceUsd", 0),
                     ai_score=analysis["confidence"],
                     signal=analysis["signal"],
-                    metadata={
+                    deployer_address=deployer_address or "",
+                    discovery_source=token.get("source", "unknown"),
+                    extra_data={
                         "reasoning": analysis["reasoning"],
                         "risk_level": analysis["risk_level"],
                         "tags": analysis["tags"],
@@ -466,8 +468,6 @@ Respond ONLY with valid JSON."""
                         "contract_creation": contract_info,
                         "top_holders": holders,
                     },
-                    deployer_address=deployer_address or "",
-                    discovery_source=token.get("source", "unknown"),
                 )
                 
                 # Update deployer stats
