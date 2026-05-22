@@ -493,7 +493,7 @@ async def dashboard():
                     <td>${fmtPct(c.peak_gain_pct)}</td>
                     <td>${((c.confidence || 0) * 100).toFixed(0)}%</td>
                     <td>${c.scan_count || 0}</td>
-                    <td>${c.deployer_address ? '<a href="javascript:showDeployer(\'' + c.deployer_address + '\')">' + shortAddr(c.deployer_address) + '</a>' : '-'}</td>
+                    <td>${c.deployer_address ? `<a href="#" onclick="showDeployer('${c.deployer_address}');return false">${shortAddr(c.deployer_address)}</a>` : '-'}</td>
                     <td>${timeAgo(c.last_seen_at)}</td>
                 </tr>
             `).join('');
