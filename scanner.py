@@ -59,7 +59,7 @@ class Scanner:
         """Get latest created pairs on a chain via search."""
         url = f"{DEXSCREENER_BASE}/latest/dex/search"
         try:
-            resp = await self.http.get(url, params={"q": chain})
+            resp = await self.http.get(url, params={"q": f"{chain} USDC"})
             resp.raise_for_status()
             data = resp.json()
             pairs = data.get("pairs", [])
@@ -75,7 +75,7 @@ class Scanner:
         """Get top pairs by volume on a chain via search."""
         url = f"{DEXSCREENER_BASE}/latest/dex/search"
         try:
-            resp = await self.http.get(url, params={"q": chain})
+            resp = await self.http.get(url, params={"q": f"{chain} WETH"})
             resp.raise_for_status()
             data = resp.json()
             pairs = data.get("pairs", [])
@@ -125,8 +125,11 @@ class Scanner:
             coins = []
             for item in data.get("coins", []):
                 coin = item.get("item", {})
+                # Get contract address for base chain if available
+                platforms = coin.get("platforms", {})
+                base_addr = platforms.get("base", "")
                 coins.append({
-                    "tokenAddress": coin.get("contract_address", ""),
+                    "tokenAddress": base_addr or coin.get("contract_address", ""),
                     "symbol": coin.get("symbol", "UNKNOWN"),
                     "name": coin.get("name", "Unknown"),
                     "priceUsd": coin.get("data", {}).get("price", 0),
@@ -147,6 +150,8 @@ class Scanner:
             data = await self.cg.get_coins_markets(vs_currency="usd", per_page=per_page, page=1)
             coins = []
             for item in data:
+                # Try to get Base chain contract address
+                # Note: markets endpoint doesn't include platforms, so we use symbol+name as key
                 coins.append({
                     "tokenAddress": item.get("contract_address", ""),
                     "symbol": item.get("symbol", "UNKNOWN").upper(),
@@ -498,13 +503,18 @@ Respond ONLY with valid JSON."""
                         token["source"] = source_names[i]
                         all_tokens.append(token)
 
-        # Deduplicate by token address
+        # Deduplicate by token address (or symbol+name if no address)
         seen = set()
         unique_tokens = []
         for t in all_tokens:
             addr = t.get("tokenAddress", "")
-            if addr and addr not in seen:
-                seen.add(addr)
+            if addr:
+                key = addr.lower()
+            else:
+                # Use symbol+name as fallback key
+                key = f"{t.get('symbol','')}_{t.get('name','')}".lower()
+            if key and key not in seen:
+                seen.add(key)
                 unique_tokens.append(t)
 
         await DB.log_event("info", "tokens_discovered", f"Found {len(unique_tokens)} unique tokens from {len([r for r in results if not isinstance(r, Exception)])} sources", {"count": len(unique_tokens)})
