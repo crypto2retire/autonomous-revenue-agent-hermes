@@ -101,6 +101,12 @@ class Scanner:
                     "source": "coingecko_gainers",
                 })
             return coins
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                await DB.log_event("warning", "coingecko_gainers_skipped", "Gainers endpoint requires paid plan")
+            else:
+                await DB.log_event("error", "coingecko_gainers_failed", str(e))
+            return []
         except Exception as e:
             await DB.log_event("error", "coingecko_gainers_failed", str(e))
             return []
@@ -123,6 +129,12 @@ class Scanner:
                     "source": "coingecko_new",
                 })
             return coins
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                await DB.log_event("warning", "coingecko_new_skipped", "New coins endpoint requires paid plan")
+            else:
+                await DB.log_event("error", "coingecko_new_failed", str(e))
+            return []
         except Exception as e:
             await DB.log_event("error", "coingecko_new_failed", str(e))
             return []
@@ -131,11 +143,12 @@ class Scanner:
         """Get token price by contract address from CoinGecko."""
         try:
             data = await self.cg.get_onchain_token_price(network, token_address)
-            prices = data.get("data", {})
-            if prices:
-                # Return the first price found
-                for addr, info in prices.items():
-                    return float(info.get("usd", 0))
+            # Response format: {"data": {"0x...": {"usd": 123.45}}}
+            price_data = data.get("data", {})
+            if isinstance(price_data, dict):
+                for addr, info in price_data.items():
+                    if isinstance(info, dict):
+                        return float(info.get("usd", 0))
         except Exception as e:
             await DB.log_event("error", "coingecko_price_failed", str(e), {"token_address": token_address})
         return None
