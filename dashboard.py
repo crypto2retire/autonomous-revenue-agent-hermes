@@ -27,11 +27,15 @@ async def health():
 async def get_coins(
     signal: Optional[str] = None,
     min_score: Optional[float] = None,
+    deployer: Optional[str] = None,
+    is_rugged: Optional[bool] = None,
     limit: int = Query(100, ge=1, le=500),
 ):
     coins = await DB.get_all_coins(
         signal=signal,
         min_score=min_score,
+        deployer_address=deployer,
+        is_rugged=is_rugged,
         limit=limit,
     )
     # Build stats
@@ -40,6 +44,8 @@ async def get_coins(
     sell_signals = sum(1 for c in coins if c.signal == "sell")
     bullish = sum(1 for c in coins if c.signal == "bullish")
     bearish = sum(1 for c in coins if c.signal == "bearish")
+    avoid = sum(1 for c in coins if c.signal == "avoid")
+    rugged = sum(1 for c in coins if c.is_rugged)
     top_gainer = max((c.price_change_pct for c in coins if c.price_change_pct is not None), default=0)
     
     stats = {
@@ -48,6 +54,8 @@ async def get_coins(
         "sell_signals": sell_signals,
         "bullish_signals": bullish,
         "bearish_signals": bearish,
+        "avoid_signals": avoid,
+        "rugged_coins": rugged,
         "top_gainer_pct": top_gainer,
     }
     return {
@@ -58,11 +66,9 @@ async def get_coins(
 
 
 @app.get("/api/coins/gainers")
-async def get_gainers(limit: int = 20):
-    coins = await DB.get_all_coins(limit=500)
-    gainers = [c for c in coins if c.price_change_pct is not None and float(c.price_change_pct) > 5]
-    gainers.sort(key=lambda x: float(x.price_change_pct or 0), reverse=True)
-    return {"coins": [c.to_dict() for c in gainers[:limit]]}
+async def get_gainers(limit: int = 20, min_gain_pct: float = 100.0):
+    coins = await DB.get_successful_coins(min_gain_pct=min_gain_pct, limit=limit)
+    return {"coins": [c.to_dict() for c in coins]}
 
 
 @app.get("/api/coins/losers")
@@ -79,6 +85,73 @@ async def get_trending(limit: int = 20):
     # Sort by scan count (most scanned = trending)
     trending = sorted(coins, key=lambda x: x.scan_count, reverse=True)
     return {"coins": [c.to_dict() for c in trending[:limit]]}
+
+
+@app.get("/api/coins/{token_address}")
+async def get_coin_detail(token_address: str):
+    coin = await DB.get_coin(token_address)
+    if not coin:
+        return {"error": "Coin not found"}
+    
+    # Get price history
+    price_history = await DB.get_price_history(token_address, hours=168)  # 7 days
+    
+    # Get deployer info
+    deployer = None
+    if coin.deployer_address:
+        deployer = await DB.get_deployer(coin.deployer_address)
+    
+    # Get other coins from same deployer
+    deployer_coins = []
+    if coin.deployer_address:
+        deployer_coins = await DB.get_coins_by_deployer(coin.deployer_address)
+    
+    return {
+        "coin": coin.to_dict(),
+        "price_history": [h.to_dict() for h in price_history],
+        "deployer": deployer.to_dict() if deployer else None,
+        "deployer_coins": [c.to_dict() for c in deployer_coins if c.token_address != token_address],
+    }
+
+
+# ── Deployers ──────────────────────────────────────────────────────
+
+@app.get("/api/deployers")
+async def get_deployers(
+    reputation: Optional[str] = None,
+    min_score: Optional[float] = None,
+    limit: int = Query(100, ge=1, le=500),
+):
+    deployers = await DB.get_all_deployers(
+        reputation=reputation,
+        min_score=min_score,
+        limit=limit,
+    )
+    return {
+        "deployers": [d.to_dict() for d in deployers],
+        "count": len(deployers),
+    }
+
+
+@app.get("/api/deployers/{address}")
+async def get_deployer_detail(address: str):
+    deployer = await DB.get_deployer(address)
+    if not deployer:
+        return {"error": "Deployer not found"}
+    
+    coins = await DB.get_coins_by_deployer(address)
+    return {
+        "deployer": deployer.to_dict(),
+        "coins": [c.to_dict() for c in coins],
+    }
+
+
+# ── Price History ──────────────────────────────────────────────────
+
+@app.get("/api/price-history/{token_address}")
+async def get_price_history(token_address: str, hours: int = 24):
+    history = await DB.get_price_history(token_address, hours=hours)
+    return {"history": [h.to_dict() for h in history], "count": len(history)}
 
 
 # ── Trades ─────────────────────────────────────────────────────────
@@ -103,6 +176,20 @@ async def get_performance(hours: int = 24):
 async def get_logs(event: Optional[str] = None, limit: int = 100):
     logs = await DB.get_logs(event=event, limit=limit)
     return {"logs": [l.to_dict() for l in logs], "count": len(logs)}
+
+
+# ── Settings ───────────────────────────────────────────────────────
+
+@app.get("/api/settings")
+async def get_settings_api():
+    settings_list = await DB.get_all_settings()
+    return {"settings": [s.to_dict() for s in settings_list]}
+
+
+@app.post("/api/settings/{key}")
+async def set_setting_api(key: str, value: str, value_type: str = "string"):
+    await DB.set_setting(key, value, value_type)
+    return {"status": "ok", "key": key}
 
 
 # ── HTML Dashboard ─────────────────────────────────────────────────
@@ -165,6 +252,9 @@ async def dashboard():
         .badge-bullish { background: #064e3b; color: #34d399; }
         .badge-bearish { background: #7f1d1d; color: #f87171; }
         .badge-neutral { background: #4b5563; color: #9ca3af; }
+        .badge-trusted { background: #064e3b; color: #34d399; }
+        .badge-rugger { background: #7f1d1d; color: #f87171; }
+        .badge-suspect { background: #92400e; color: #fbbf24; }
         .positive { color: #34d399; }
         .negative { color: #f87171; }
         .refresh-bar {
@@ -181,6 +271,12 @@ async def dashboard():
             padding: 6px 10px; border-radius: 4px; border: 1px solid #1a2332;
             background: #111827; color: #e0e6ed;
         }
+        .deployer-info {
+            background: #111827; border: 1px solid #1a2332; border-radius: 8px;
+            padding: 15px; margin-bottom: 15px;
+        }
+        .deployer-info h3 { color: #00d4aa; margin-bottom: 10px; }
+        .deployer-info p { margin: 5px 0; }
         @media (max-width: 768px) {
             .stats-grid { grid-template-columns: repeat(2, 1fr); }
             table { font-size: 0.8rem; }
@@ -195,6 +291,7 @@ async def dashboard():
 
         <div class="tabs">
             <div class="tab active" onclick="showTab('watchlist')">📊 Watchlist</div>
+            <div class="tab" onclick="showTab('deployers')">👤 Deployers</div>
             <div class="tab" onclick="showTab('trades')">💰 Trades</div>
             <div class="tab" onclick="showTab('performance')">📈 Performance</div>
             <div class="tab" onclick="showTab('logs')">📝 Logs</div>
@@ -217,6 +314,11 @@ async def dashboard():
                     <option value="hold">Hold</option>
                     <option value="avoid">Avoid</option>
                 </select>
+                <select id="rugged-filter" onchange="loadWatchlist()">
+                    <option value="">All Coins</option>
+                    <option value="false">Active Only</option>
+                    <option value="true">Rugged Only</option>
+                </select>
             </div>
             <table>
                 <thead>
@@ -224,13 +326,47 @@ async def dashboard():
                         <th>Symbol</th>
                         <th>Signal</th>
                         <th>Price</th>
-                        <th>Change</th>
+                        <th>Peak Gain</th>
                         <th>AI Score</th>
                         <th>Scans</th>
+                        <th>Deployer</th>
                         <th>Last Seen</th>
                     </tr>
                 </thead>
                 <tbody id="watchlist-body"></tbody>
+            </table>
+        </div>
+
+        <!-- Deployers Panel -->
+        <div class="panel" id="deployers-panel">
+            <div class="refresh-bar">
+                <span id="deployers-count">Loading...</span>
+                <button class="btn" onclick="loadDeployers()">Refresh</button>
+            </div>
+            <div class="stats-grid" id="deployers-stats"></div>
+            <div class="filters">
+                <select id="reputation-filter" onchange="loadDeployers()">
+                    <option value="">All Reputations</option>
+                    <option value="trusted">Trusted</option>
+                    <option value="verified">Verified</option>
+                    <option value="suspect">Suspect</option>
+                    <option value="rugger">Rugger</option>
+                    <option value="unknown">Unknown</option>
+                </select>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Address</th>
+                        <th>Reputation</th>
+                        <th>Score</th>
+                        <th>Tokens</th>
+                        <th>Success</th>
+                        <th>Rugs</th>
+                        <th>First Seen</th>
+                    </tr>
+                </thead>
+                <tbody id="deployers-body"></tbody>
             </table>
         </div>
 
@@ -293,6 +429,7 @@ async def dashboard():
             event.target.classList.add('active');
             document.getElementById(name + '-panel').classList.add('active');
             if (name === 'watchlist') loadWatchlist();
+            if (name === 'deployers') loadDeployers();
             if (name === 'trades') loadTrades();
             if (name === 'performance') loadPerformance();
             if (name === 'logs') loadLogs();
@@ -322,10 +459,17 @@ async def dashboard():
             return Math.floor(diff/86400) + 'd ago';
         }
 
+        function shortAddr(addr) {
+            if (!addr) return '-';
+            return addr.substring(0, 6) + '...' + addr.substring(addr.length - 4);
+        }
+
         async function loadWatchlist() {
             const signal = document.getElementById('signal-filter').value;
+            const rugged = document.getElementById('rugged-filter').value;
             let url = '/api/coins?limit=200';
             if (signal) url += '&signal=' + signal;
+            if (rugged) url += '&is_rugged=' + rugged;
 
             const res = await fetch(url);
             const data = await res.json();
@@ -336,8 +480,8 @@ async def dashboard():
             document.getElementById('watchlist-stats').innerHTML = `
                 <div class="stat-card"><div class="stat-value">${stats.total_coins || 0}</div><div class="stat-label">Total Coins</div></div>
                 <div class="stat-card"><div class="stat-value">${stats.buy_signals || 0}</div><div class="stat-label">Buy Signals</div></div>
-                <div class="stat-card"><div class="stat-value">${stats.bullish_signals || 0}</div><div class="stat-label">Bullish</div></div>
-                <div class="stat-card"><div class="stat-value">${stats.bearish_signals || 0}</div><div class="stat-label">Bearish</div></div>
+                <div class="stat-card"><div class="stat-value">${stats.avoid_signals || 0}</div><div class="stat-label">Avoid</div></div>
+                <div class="stat-card"><div class="stat-value">${stats.rugged_coins || 0}</div><div class="stat-label">Rugged</div></div>
             `;
 
             const tbody = document.getElementById('watchlist-body');
@@ -346,12 +490,57 @@ async def dashboard():
                     <td><strong>${c.symbol}</strong><br><small style="color:#8892a0">${c.name || ''}</small></td>
                     <td><span class="badge badge-${c.signal}">${c.signal?.toUpperCase()}</span></td>
                     <td>${fmtNum(c.last_price_usd || c.first_price_usd, 6)}</td>
-                    <td>${fmtPct(c.price_change_pct)}</td>
+                    <td>${fmtPct(c.peak_gain_pct)}</td>
                     <td>${((c.confidence || 0) * 100).toFixed(0)}%</td>
                     <td>${c.scan_count || 0}</td>
+                    <td>${c.deployer_address ? '<a href="javascript:showDeployer(\'' + c.deployer_address + '\')">' + shortAddr(c.deployer_address) + '</a>' : '-'}</td>
                     <td>${timeAgo(c.last_seen_at)}</td>
                 </tr>
             `).join('');
+        }
+
+        async function loadDeployers() {
+            const reputation = document.getElementById('reputation-filter').value;
+            let url = '/api/deployers?limit=200';
+            if (reputation) url += '&reputation=' + reputation;
+
+            const res = await fetch(url);
+            const data = await res.json();
+
+            document.getElementById('deployers-count').textContent = data.count + ' deployers tracked';
+
+            const trusted = data.deployers.filter(d => d.reputation === 'trusted').length;
+            const rugger = data.deployers.filter(d => d.reputation === 'rugger').length;
+            const suspect = data.deployers.filter(d => d.reputation === 'suspect').length;
+
+            document.getElementById('deployers-stats').innerHTML = `
+                <div class="stat-card"><div class="stat-value">${data.count || 0}</div><div class="stat-label">Total Deployers</div></div>
+                <div class="stat-card"><div class="stat-value">${trusted}</div><div class="stat-label">Trusted</div></div>
+                <div class="stat-card"><div class="stat-value">${suspect}</div><div class="stat-label">Suspect</div></div>
+                <div class="stat-card"><div class="stat-value">${rugger}</div><div class="stat-label">Ruggers</div></div>
+            `;
+
+            const tbody = document.getElementById('deployers-body');
+            tbody.innerHTML = data.deployers.map(d => `
+                <tr>
+                    <td><strong>${shortAddr(d.address)}</strong></td>
+                    <td><span class="badge badge-${d.reputation}">${d.reputation?.toUpperCase()}</span></td>
+                    <td>${((d.reputation_score || 0) * 100).toFixed(0)}%</td>
+                    <td>${d.total_tokens_deployed || 0}</td>
+                    <td>${d.successful_tokens || 0}</td>
+                    <td>${d.rugged_tokens || 0}</td>
+                    <td>${timeAgo(d.first_seen_at)}</td>
+                </tr>
+            `).join('');
+        }
+
+        async function showDeployer(address) {
+            // Switch to deployers tab and filter
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+            event.target.classList.add('active');
+            document.getElementById('deployers-panel').classList.add('active');
+            loadDeployers();
         }
 
         async function loadTrades() {
@@ -384,6 +573,8 @@ async def dashboard():
                 <div class="stat-card"><div class="stat-value">${s.sell_trades || 0}</div><div class="stat-label">Sells</div></div>
                 <div class="stat-card"><div class="stat-value">${fmtNum(s.total_volume)}</div><div class="stat-label">Total Volume</div></div>
                 <div class="stat-card"><div class="stat-value">${s.total_coins_scanned || 0}</div><div class="stat-label">Coins Scanned</div></div>
+                <div class="stat-card"><div class="stat-value">${s.total_deployers || 0}</div><div class="stat-label">Deployers</div></div>
+                <div class="stat-card"><div class="stat-value">${s.trusted_deployers || 0}</div><div class="stat-label">Trusted</div></div>
             `;
         }
 

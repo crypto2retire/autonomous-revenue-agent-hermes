@@ -421,6 +421,11 @@ Respond ONLY with valid JSON."""
             if contract_info:
                 token["contract_creation"] = contract_info
 
+            # Get deployer address
+            deployer_address = None
+            if contract_info and isinstance(contract_info, dict):
+                deployer_address = contract_info.get("contractCreator")
+
             # Get top holders
             holders = await self.get_basescan_token_holders(address, top_n=5)
             if holders:
@@ -429,10 +434,21 @@ Respond ONLY with valid JSON."""
             # AI analysis
             analysis = await self.analyze_opportunity(token)
 
-            # Persist to watchlist
+            # Persist to watchlist with deployer tracking
             existing = await DB.get_coin(address)
             if existing:
                 await DB.update_coin_signal(address, analysis["signal"], analysis["confidence"])
+                # Record price history for long-term tracking
+                await DB.record_price_history(
+                    token_address=address,
+                    symbol=token.get("symbol", "UNKNOWN"),
+                    price_usd=token.get("priceUsd", 0),
+                    volume_24h=token.get("volume", {}).get("h24"),
+                    liquidity_usd=token.get("liquidity", {}).get("usd"),
+                    market_cap=token.get("marketCap"),
+                    signal=analysis["signal"],
+                    confidence=analysis["confidence"],
+                )
             else:
                 await DB.add_coin(
                     token_address=address,
@@ -446,8 +462,17 @@ Respond ONLY with valid JSON."""
                         "risk_level": analysis["risk_level"],
                         "tags": analysis["tags"],
                         "source": token.get("source", "unknown"),
+                        "basescan": basescan_info,
+                        "contract_creation": contract_info,
+                        "top_holders": holders,
                     },
+                    deployer_address=deployer_address or "",
+                    discovery_source=token.get("source", "unknown"),
                 )
+                
+                # Update deployer stats
+                if deployer_address:
+                    await DB.update_deployer_stats(deployer_address)
 
             # Log significant signals
             if analysis["signal"] == "buy" and analysis["confidence"] > 0.7:

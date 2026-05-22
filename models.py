@@ -6,9 +6,9 @@ from enum import Enum as PyEnum
 
 from sqlalchemy import (
     Column, Integer, String, DateTime, Numeric, Text,
-    Boolean, Index
+    Boolean, Index, ForeignKey, UniqueConstraint, JSON
 )
-from sqlalchemy.orm import declarative_base
+from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
 
@@ -27,11 +27,64 @@ class TradeStatus(str, PyEnum):
     CLOSED = "closed"
 
 
+class DeployerReputation(str, PyEnum):
+    UNKNOWN = "unknown"
+    TRUSTED = "trusted"
+    SUSPECT = "suspect"
+    RUGGER = "rugger"
+    VERIFIED = "verified"
+
+
 def _f(val):
     """Safely convert Numeric/Decimal to float."""
     if val is None:
         return None
     return float(val)
+
+
+class Deployer(Base):
+    """Track deployer wallets and their reputation/history."""
+    __tablename__ = "deployers"
+
+    id = Column(Integer, primary_key=True)
+    address = Column(String(66), nullable=False, unique=True, index=True)
+    
+    # Reputation tracking
+    reputation = Column(String(20), default=DeployerReputation.UNKNOWN)
+    reputation_score = Column(Numeric(5, 4), default=0.5)  # 0.0 to 1.0
+    
+    # Statistics
+    total_tokens_deployed = Column(Integer, default=0)
+    successful_tokens = Column(Integer, default=0)  # Tokens that gained >100%
+    rugged_tokens = Column(Integer, default=0)  # Tokens that rug pulled
+    avg_token_lifespan_days = Column(Numeric(10, 2))
+    
+    # First/last seen
+    first_seen_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    last_seen_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    
+    # Analysis
+    notes = Column(Text)
+    tags = Column(Text)  # comma-separated: "dexscreener_trending", "coingecko_listed", etc.
+    
+    # Relationships
+    tokens = relationship("CoinWatch", back_populates="deployer")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "address": self.address,
+            "reputation": self.reputation,
+            "reputation_score": _f(self.reputation_score),
+            "total_tokens_deployed": self.total_tokens_deployed,
+            "successful_tokens": self.successful_tokens,
+            "rugged_tokens": self.rugged_tokens,
+            "avg_token_lifespan_days": _f(self.avg_token_lifespan_days),
+            "first_seen_at": self.first_seen_at.isoformat() if self.first_seen_at else None,
+            "last_seen_at": self.last_seen_at.isoformat() if self.last_seen_at else None,
+            "notes": self.notes,
+            "tags": self.tags,
+        }
 
 
 class CoinWatch(Base):
@@ -43,26 +96,56 @@ class CoinWatch(Base):
     chain = Column(String(20), default="base")
     symbol = Column(String(20))
     name = Column(String(100))
+    
+    # Deployer tracking
+    deployer_address = Column(String(66), ForeignKey("deployers.address"), index=True)
+    deployer = relationship("Deployer", back_populates="tokens")
+    
+    # Discovery tracking
     first_seen_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     last_seen_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     first_price_usd = Column(Numeric(24, 12))
     last_price_usd = Column(Numeric(24, 12))
     price_change_pct = Column(Numeric(10, 4))
+    
+    # Market data
     volume_24h = Column(Numeric(24, 6))
     liquidity_usd = Column(Numeric(24, 6))
     market_cap = Column(Numeric(24, 6))
     holder_count = Column(Integer)
+    
+    # AI Analysis
     signal = Column(String(20))
     confidence = Column(Numeric(5, 4))
     ai_analysis = Column(Text)
     scan_count = Column(Integer, default=1)
     is_watching = Column(Boolean, default=True)
     tags = Column(Text)
+    
+    # Long-term tracking
+    highest_price_since_discovery = Column(Numeric(24, 12))
+    lowest_price_since_discovery = Column(Numeric(24, 12))
+    peak_gain_pct = Column(Numeric(10, 4))  # Max gain from first price
+    peak_loss_pct = Column(Numeric(10, 4))  # Max loss from first price
+    
+    # Status tracking
+    is_rugged = Column(Boolean, default=False)
+    rugged_at = Column(DateTime(timezone=True))
+    is_abandoned = Column(Boolean, default=False)  # No activity for 30+ days
+    
+    # Source tracking
+    discovery_source = Column(String(50))  # dexscreener, coingecko, dune, manual
+    
+    # Metadata (JSON for flexibility)
+    metadata = Column(JSON)
 
     __table_args__ = (
         Index("idx_coin_watch_symbol", "symbol"),
         Index("idx_coin_watch_signal", "signal"),
         Index("idx_coin_watch_tags", "tags"),
+        Index("idx_coin_watch_deployer", "deployer_address"),
+        Index("idx_coin_watch_first_seen", "first_seen_at"),
+        Index("idx_coin_watch_is_rugged", "is_rugged"),
     )
 
     def to_dict(self):
@@ -72,6 +155,7 @@ class CoinWatch(Base):
             "chain": self.chain,
             "symbol": self.symbol,
             "name": self.name,
+            "deployer_address": self.deployer_address,
             "first_seen_at": self.first_seen_at.isoformat() if self.first_seen_at else None,
             "last_seen_at": self.last_seen_at.isoformat() if self.last_seen_at else None,
             "first_price_usd": _f(self.first_price_usd),
@@ -87,6 +171,54 @@ class CoinWatch(Base):
             "scan_count": self.scan_count,
             "is_watching": self.is_watching,
             "tags": self.tags,
+            "highest_price_since_discovery": _f(self.highest_price_since_discovery),
+            "lowest_price_since_discovery": _f(self.lowest_price_since_discovery),
+            "peak_gain_pct": _f(self.peak_gain_pct),
+            "peak_loss_pct": _f(self.peak_loss_pct),
+            "is_rugged": self.is_rugged,
+            "rugged_at": self.rugged_at.isoformat() if self.rugged_at else None,
+            "is_abandoned": self.is_abandoned,
+            "discovery_source": self.discovery_source,
+            "metadata": self.metadata,
+        }
+
+
+class PriceHistory(Base):
+    """Historical price snapshots for long-term tracking."""
+    __tablename__ = "price_history"
+
+    id = Column(Integer, primary_key=True)
+    token_address = Column(String(66), nullable=False, index=True)
+    symbol = Column(String(20))
+    price_usd = Column(Numeric(24, 12))
+    volume_24h = Column(Numeric(24, 6))
+    liquidity_usd = Column(Numeric(24, 6))
+    market_cap = Column(Numeric(24, 6))
+    holder_count = Column(Integer)
+    
+    # AI signal at this point in time
+    signal = Column(String(20))
+    confidence = Column(Numeric(5, 4))
+    
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_price_history_token_time", "token_address", "created_at"),
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "token_address": self.token_address,
+            "symbol": self.symbol,
+            "price_usd": _f(self.price_usd),
+            "volume_24h": _f(self.volume_24h),
+            "liquidity_usd": _f(self.liquidity_usd),
+            "market_cap": _f(self.market_cap),
+            "holder_count": self.holder_count,
+            "signal": self.signal,
+            "confidence": _f(self.confidence),
+            "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 
 
@@ -233,4 +365,26 @@ class PerformanceMetric(Base):
             "avg_trade_size": _f(self.avg_trade_size),
             "max_drawdown_pct": _f(self.max_drawdown_pct),
             "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class AgentSettings(Base):
+    """Persistent agent settings and state."""
+    __tablename__ = "agent_settings"
+
+    id = Column(Integer, primary_key=True)
+    key = Column(String(100), nullable=False, unique=True, index=True)
+    value = Column(Text)
+    value_type = Column(String(20), default="string")  # string, int, float, bool, json
+    description = Column(Text)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "key": self.key,
+            "value": self.value,
+            "value_type": self.value_type,
+            "description": self.description,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
