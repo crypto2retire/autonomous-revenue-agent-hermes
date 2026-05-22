@@ -23,8 +23,10 @@ class Settings(BaseSettings):
     # Database
     database_url: SecretStr = Field(..., description="PostgreSQL connection string")
 
-    # Optional APIs
+    # BaseScan
     basescan_api_key: Optional[SecretStr] = None
+
+    # Optional APIs
     wsic_api_key: Optional[SecretStr] = None
 
     # CoinGecko

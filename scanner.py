@@ -11,6 +11,7 @@ from config import get_settings
 from database import DB
 from coingecko_client import get_coingecko
 from dune_client import get_dune
+from basescan_client import get_basescan
 
 settings = get_settings()
 
@@ -26,11 +27,13 @@ class Scanner:
         self.running = False
         self.cg = get_coingecko()
         self.dune = get_dune()
+        self.basescan = get_basescan()
 
     async def close(self):
         await self.http.aclose()
         await self.cg.close()
         await self.dune.close()
+        await self.basescan.close()
 
     # ── DexScreener API ──────────────────────────────────────────────
 
@@ -205,6 +208,51 @@ class Scanner:
             await DB.log_event("error", "dune_wallet_failed", str(e), {"wallet": wallet_address})
             return {}
 
+    # ── BaseScan ──────────────────────────────────────────────────────
+
+    async def get_basescan_token_info(self, token_address: str) -> Dict[str, Any]:
+        """Get token info from BaseScan for a contract address."""
+        try:
+            info = await self.basescan.get_token_info(token_address)
+            if info:
+                return {
+                    "name": info.get("tokenName", ""),
+                    "symbol": info.get("tokenSymbol", ""),
+                    "decimals": int(info.get("tokenDecimal", 18)),
+                    "total_supply": info.get("totalSupply", "0"),
+                    "contract": token_address,
+                }
+        except Exception as e:
+            await DB.log_event("error", "basescan_token_info_failed", str(e), {"token_address": token_address})
+        return {}
+
+    async def get_basescan_contract_creation(self, token_address: str) -> Dict[str, Any]:
+        """Get contract creation details from BaseScan."""
+        try:
+            result = await self.basescan.get_contract_creation([token_address])
+            if result:
+                return result[0]
+        except Exception as e:
+            await DB.log_event("error", "basescan_contract_failed", str(e), {"token_address": token_address})
+        return {}
+
+    async def get_basescan_token_holders(self, token_address: str, top_n: int = 10) -> List[Dict[str, Any]]:
+        """Get top token holders from BaseScan."""
+        try:
+            holders = await self.basescan.get_token_holder_list(token_address, offset=top_n)
+            return holders
+        except Exception as e:
+            await DB.log_event("error", "basescan_holders_failed", str(e), {"token_address": token_address})
+            return []
+
+    async def get_basescan_gas(self) -> Dict[str, Any]:
+        """Get current gas prices from BaseScan."""
+        try:
+            return await self.basescan.get_gas_oracle()
+        except Exception as e:
+            await DB.log_event("error", "basescan_gas_failed", str(e))
+            return {}
+
     # ── Venice AI Analysis ───────────────────────────────────────────
 
     async def analyze_opportunity(self, token: Dict[str, Any]) -> Dict[str, Any]:
@@ -360,6 +408,23 @@ Respond ONLY with valid JSON."""
                     token["liquidity"] = {"usd": float(best_pair.get("liquidity", {}).get("usd", 0) or 0)}
                     token["marketCap"] = float(best_pair.get("marketCap", 0) or 0)
                     token["priceChange"] = {"h24": float(best_pair.get("priceChange", {}).get("h24", 0) or 0)}
+
+            # Enrich with BaseScan data
+            basescan_info = await self.get_basescan_token_info(address)
+            if basescan_info:
+                token["name"] = basescan_info.get("name") or token.get("name", "Unknown")
+                token["symbol"] = basescan_info.get("symbol") or token.get("symbol", "UNKNOWN")
+                token["basescan"] = basescan_info
+
+            # Get contract creation date
+            contract_info = await self.get_basescan_contract_creation(address)
+            if contract_info:
+                token["contract_creation"] = contract_info
+
+            # Get top holders
+            holders = await self.get_basescan_token_holders(address, top_n=5)
+            if holders:
+                token["top_holders"] = holders
 
             # AI analysis
             analysis = await self.analyze_opportunity(token)
