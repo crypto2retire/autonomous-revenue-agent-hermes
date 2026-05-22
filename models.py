@@ -229,6 +229,7 @@ class Trade(Base):
     id = Column(Integer, primary_key=True)
     trade_id = Column(String(50), unique=True, index=True)
     token_address = Column(String(66), nullable=False, index=True)
+    chain = Column(String(20), default="base")
     symbol = Column(String(20))
     side = Column(String(10))
     status = Column(String(20), default=TradeStatus.PENDING)
@@ -257,6 +258,7 @@ class Trade(Base):
             "id": self.id,
             "trade_id": self.trade_id,
             "token_address": self.token_address,
+            "chain": self.chain,
             "symbol": self.symbol,
             "side": self.side,
             "status": self.status,

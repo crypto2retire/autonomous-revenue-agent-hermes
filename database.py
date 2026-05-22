@@ -38,14 +38,14 @@ else:
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
-async def init_db():
-    """Create all tables."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-
 class DB:
-    """Database operations for the trading agent."""
+    """Database operations."""
+
+    @staticmethod
+    async def init():
+        """Create all tables."""
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
 
     @staticmethod
     async def get_session():
@@ -148,6 +148,7 @@ class DB:
         extra_data: dict = None,
         deployer_address: str = None,
         discovery_source: str = "unknown",
+        chain: str = "base",
     ) -> CoinWatch:
         """Add a new coin to the watchlist."""
         async with async_session() as session:
@@ -164,6 +165,7 @@ class DB:
             
             coin = CoinWatch(
                 token_address=token_address,
+                chain=chain,
                 symbol=symbol,
                 name=name,
                 first_price_usd=price_at_discovery,
@@ -197,6 +199,7 @@ class DB:
         min_score: float = None,
         is_rugged: bool = None,
         deployer_address: str = None,
+        chain: str = None,
         limit: int = 100,
     ) -> List[CoinWatch]:
         """Get coins with optional filtering."""
@@ -211,6 +214,8 @@ class DB:
                 query = query.where(CoinWatch.is_rugged == is_rugged)
             if deployer_address:
                 query = query.where(CoinWatch.deployer_address == deployer_address)
+            if chain:
+                query = query.where(CoinWatch.chain == chain)
 
             query = query.limit(limit)
             result = await session.execute(query)
@@ -357,29 +362,31 @@ class DB:
     # --- Trades ---
 
     @staticmethod
-    async def record_trade(
+    async def create_trade(
+        trade_id: str,
         token_address: str,
         symbol: str,
         side: str,
-        amount: float,
-        price: float,
-        total_value: float,
-        trade_type: str = "paper",
-        tx_hash: str = None,
-        status: str = "completed",
+        status: str,
+        amount_usd: float,
+        signal: str,
+        confidence: float,
+        is_paper: bool,
+        chain: str = "base",
     ) -> Trade:
-        """Record a trade."""
+        """Create a new trade record."""
         async with async_session() as session:
             trade = Trade(
+                trade_id=trade_id,
                 token_address=token_address,
+                chain=chain,
                 symbol=symbol,
                 side=side,
-                amount_usd=amount,
-                entry_price=price,
-                amount_token=total_value,
-                is_paper=(trade_type == "paper"),
-                tx_hash=tx_hash,
                 status=status,
+                amount_usd=amount_usd,
+                signal=signal,
+                confidence=confidence,
+                is_paper=is_paper,
             )
             session.add(trade)
             await session.commit()
@@ -387,10 +394,51 @@ class DB:
             return trade
 
     @staticmethod
+    async def update_trade(
+        trade_id: str,
+        status: str = None,
+        executed_at: datetime = None,
+        entry_price: float = None,
+        exit_price: float = None,
+        tx_hash: str = None,
+        closed_at: datetime = None,
+        close_reason: str = None,
+        pnl_usd: float = None,
+        pnl_pct: float = None,
+    ):
+        """Update an existing trade."""
+        async with async_session() as session:
+            result = await session.execute(
+                select(Trade).where(Trade.trade_id == trade_id)
+            )
+            trade = result.scalar_one_or_none()
+            if trade:
+                if status is not None:
+                    trade.status = status
+                if executed_at is not None:
+                    trade.executed_at = executed_at
+                if entry_price is not None:
+                    trade.entry_price = entry_price
+                if exit_price is not None:
+                    trade.exit_price = exit_price
+                if tx_hash is not None:
+                    trade.tx_hash = tx_hash
+                if closed_at is not None:
+                    trade.closed_at = closed_at
+                if close_reason is not None:
+                    trade.close_reason = close_reason
+                if pnl_usd is not None:
+                    trade.pnl_usd = pnl_usd
+                if pnl_pct is not None:
+                    trade.pnl_pct = pnl_pct
+                await session.commit()
+
+    @staticmethod
     async def get_trades(
         token_address: str = None,
         side: str = None,
         status: str = None,
+        chain: str = None,
         limit: int = 100,
     ) -> List[Trade]:
         """Get trades with filtering."""
@@ -403,6 +451,8 @@ class DB:
                 query = query.where(Trade.side == side)
             if status:
                 query = query.where(Trade.status == status)
+            if chain:
+                query = query.where(Trade.chain == chain)
 
             query = query.limit(limit)
             result = await session.execute(query)

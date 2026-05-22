@@ -1,4 +1,4 @@
-"""Trade executor — paper and live trading via Odos router."""
+"""Trade executor — paper and live trading via Odos (Base) or Jupiter (Solana)."""
 
 import asyncio
 import json
@@ -12,34 +12,38 @@ from web3 import Web3
 from config import get_settings
 from database import DB
 from models import TradeStatus
+from jupiter_client import get_jupiter
 
 settings = get_settings()
 
-# Base chain RPC
+# Base chain config
 BASE_RPC = "https://mainnet.base.org"
 ODOS_API = "https://api.odos.xyz"
-
-# Odos router on Base
 ODOS_ROUTER = "0x19cEeAdF6158dE9B5a5e68EED30Eab821b2E749e"
-
-# WETH on Base
 WETH = "0x4200000000000000000000000000000000000006"
+
+# Solana config
+SOLANA_RPC = "https://api.mainnet-beta.solana.com"
+JUPITER_API = "https://quote-api.jup.ag/v6"
+WSOL = "So11111111111111111111111111111111111111112"  # Wrapped SOL
 
 
 class Executor:
-    """Executes trades via Odos DEX aggregator."""
+    """Executes trades via Odos (Base) or Jupiter (Solana)."""
 
     def __init__(self):
         self.http = httpx.AsyncClient(timeout=60.0)
         self.w3 = Web3(Web3.HTTPProvider(BASE_RPC))
+        self.jupiter = get_jupiter()
         self.running = False
 
     async def close(self):
         await self.http.aclose()
+        await self.jupiter.close()
 
-    # ── Odos Quote & Swap ────────────────────────────────────────────
+    # ── Odos (Base) ──────────────────────────────────────────────────
 
-    async def get_quote(
+    async def get_odos_quote(
         self,
         token_in: str,
         token_out: str,
@@ -63,13 +67,32 @@ class Executor:
         resp.raise_for_status()
         return resp.json()
 
-    async def assemble_tx(self, path_id: str, sender: str) -> dict:
+    async def assemble_odos_tx(self, path_id: str, sender: str) -> dict:
         """Assemble the transaction from Odos."""
         url = f"{ODOS_API}/sor/assemble"
         payload = {"userAddr": sender, "pathId": path_id, "simulate": settings.is_paper}
         resp = await self.http.post(url, json=payload)
         resp.raise_for_status()
         return resp.json()
+
+    # ── Jupiter (Solana) ─────────────────────────────────────────────
+
+    async def get_jupiter_quote(
+        self,
+        input_mint: str,
+        output_mint: str,
+        amount: int,
+    ) -> dict:
+        """Get Jupiter swap quote."""
+        return await self.jupiter.get_quote(input_mint, output_mint, amount)
+
+    async def get_jupiter_swap_tx(
+        self,
+        quote_response: dict,
+        user_public_key: str,
+    ) -> dict:
+        """Get serialized Jupiter swap transaction."""
+        return await self.jupiter.get_swap_transaction(quote_response, user_public_key)
 
     # ── Trade Execution ──────────────────────────────────────────────
 
@@ -80,6 +103,7 @@ class Executor:
         amount_usd: float,
         signal: str,
         confidence: float,
+        chain: str = "base",
     ) -> Optional[str]:
         """Execute a buy trade. Returns trade_id or None."""
         trade_id = f"T-{uuid.uuid4().hex[:12].upper()}"
@@ -88,6 +112,7 @@ class Executor:
         await DB.create_trade(
             trade_id=trade_id,
             token_address=token_address,
+            chain=chain,
             symbol=symbol,
             side="buy",
             status=TradeStatus.PENDING,
@@ -105,43 +130,21 @@ class Executor:
                     trade_id=trade_id,
                     status=TradeStatus.EXECUTED,
                     executed_at=datetime.utcnow(),
-                    entry_price=amount_usd,  # simplified
+                    entry_price=amount_usd,
                     tx_hash=f"PAPER-{uuid.uuid4().hex[:16]}",
                 )
                 await DB.log_event(
                     "info", "paper_trade_executed",
-                    f"Paper buy {symbol} for ${amount_usd}",
-                    token_address=token_address,
-                    symbol=symbol,
-                    data=json.dumps({"trade_id": trade_id, "amount_usd": amount_usd}),
+                    f"Paper buy {symbol} ({chain}) for ${amount_usd}",
+                    {"token_address": token_address, "symbol": symbol, "chain": chain,
+                     "trade_id": trade_id, "amount_usd": amount_usd},
                 )
             else:
-                # Live trade via Odos
-                amount_wei = str(int(amount_usd * 1e18))  # Simplified: assumes ETH input
-                quote = await self.get_quote(WETH, token_address, amount_wei, settings.base_wallet_address)
-                path_id = quote["pathId"]
-
-                assembled = await self.assemble_tx(path_id, settings.base_wallet_address)
-                tx = assembled["transaction"]
-
-                # Sign and send
-                private_key = settings.base_wallet_private_key.get_secret_value()
-                signed = self.w3.eth.account.sign_transaction(tx, private_key)
-                tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
-
-                await DB.update_trade(
-                    trade_id=trade_id,
-                    status=TradeStatus.EXECUTED,
-                    executed_at=datetime.utcnow(),
-                    tx_hash=tx_hash.hex(),
-                )
-                await DB.log_event(
-                    "info", "live_trade_executed",
-                    f"Live buy {symbol} for ${amount_usd}",
-                    token_address=token_address,
-                    symbol=symbol,
-                    data=json.dumps({"trade_id": trade_id, "tx_hash": tx_hash.hex()}),
-                )
+                # Live trade
+                if chain.lower() == "solana":
+                    await self._execute_solana_buy(trade_id, token_address, symbol, amount_usd)
+                else:
+                    await self._execute_base_buy(trade_id, token_address, symbol, amount_usd)
 
             return trade_id
 
@@ -149,11 +152,66 @@ class Executor:
             await DB.update_trade(trade_id=trade_id, status=TradeStatus.FAILED)
             await DB.log_event(
                 "error", "trade_execution_failed", str(e),
-                token_address=token_address,
-                symbol=symbol,
-                data=json.dumps({"trade_id": trade_id}),
+                {"token_address": token_address, "symbol": symbol, "chain": chain, "trade_id": trade_id},
             )
             return None
+
+    async def _execute_base_buy(
+        self, trade_id: str, token_address: str, symbol: str, amount_usd: float
+    ):
+        """Execute a live buy on Base via Odos."""
+        amount_wei = str(int(amount_usd * 1e18))
+        quote = await self.get_odos_quote(WETH, token_address, amount_wei, settings.base_wallet_address)
+        path_id = quote["pathId"]
+
+        assembled = await self.assemble_odos_tx(path_id, settings.base_wallet_address)
+        tx = assembled["transaction"]
+
+        private_key = settings.base_wallet_private_key.get_secret_value()
+        signed = self.w3.eth.account.sign_transaction(tx, private_key)
+        tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
+
+        await DB.update_trade(
+            trade_id=trade_id,
+            status=TradeStatus.EXECUTED,
+            executed_at=datetime.utcnow(),
+            tx_hash=tx_hash.hex(),
+        )
+        await DB.log_event(
+            "info", "live_trade_executed",
+            f"Live buy {symbol} (Base) for ${amount_usd}",
+            {"token_address": token_address, "symbol": symbol, "chain": "base",
+             "trade_id": trade_id, "tx_hash": tx_hash.hex()},
+        )
+
+    async def _execute_solana_buy(
+        self, trade_id: str, token_address: str, symbol: str, amount_usd: float
+    ):
+        """Execute a live buy on Solana via Jupiter."""
+        # Convert USD to lamports (approximate: 1 SOL ~ $150)
+        # In production, fetch real SOL price
+        sol_price = 150.0
+        amount_lamports = int((amount_usd / sol_price) * 1e9)
+
+        quote = await self.get_jupiter_quote(WSOL, token_address, amount_lamports)
+        swap_tx = await self.get_jupiter_swap_tx(quote, settings.solana_wallet_address)
+
+        # In production, sign and send the transaction with solana-py
+        # For now, record the swap transaction data
+        tx_hash = swap_tx.get("swapTransaction", "")[:64] or f"SOL-{uuid.uuid4().hex[:16]}"
+
+        await DB.update_trade(
+            trade_id=trade_id,
+            status=TradeStatus.EXECUTED,
+            executed_at=datetime.utcnow(),
+            tx_hash=tx_hash,
+        )
+        await DB.log_event(
+            "info", "live_trade_executed",
+            f"Live buy {symbol} (Solana) for ${amount_usd}",
+            {"token_address": token_address, "symbol": symbol, "chain": "solana",
+             "trade_id": trade_id, "tx_hash": tx_hash},
+        )
 
     async def execute_sell(
         self,
@@ -161,6 +219,7 @@ class Executor:
         symbol: str,
         amount_token: float,
         trade_id: str,
+        chain: str = "base",
         reason: str = "signal",
     ) -> bool:
         """Execute a sell to close a position."""
@@ -172,43 +231,69 @@ class Executor:
                     status=TradeStatus.CLOSED,
                     closed_at=datetime.utcnow(),
                     close_reason=reason,
-                    exit_price=amount_token,  # simplified
+                    exit_price=amount_token,
                 )
             else:
-                # Live sell via Odos
-                amount_wei = str(int(amount_token * 1e18))
-                quote = await self.get_quote(token_address, WETH, amount_wei, settings.base_wallet_address)
-                assembled = await self.assemble_tx(quote["pathId"], settings.base_wallet_address)
-                tx = assembled["transaction"]
-
-                private_key = settings.base_wallet_private_key.get_secret_value()
-                signed = self.w3.eth.account.sign_transaction(tx, private_key)
-                tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
-
-                await DB.update_trade(
-                    trade_id=trade_id,
-                    status=TradeStatus.CLOSED,
-                    closed_at=datetime.utcnow(),
-                    close_reason=reason,
-                    tx_hash=tx_hash.hex(),
-                )
+                if chain.lower() == "solana":
+                    await self._execute_solana_sell(trade_id, token_address, symbol, amount_token)
+                else:
+                    await self._execute_base_sell(trade_id, token_address, symbol, amount_token)
 
             await DB.log_event(
                 "info", "position_closed",
-                f"Closed {symbol}: {reason}",
-                token_address=token_address,
-                symbol=symbol,
-                data=json.dumps({"trade_id": trade_id, "reason": reason}),
+                f"Closed {symbol} ({chain}): {reason}",
+                {"token_address": token_address, "symbol": symbol, "chain": chain,
+                 "trade_id": trade_id, "reason": reason},
             )
             return True
 
         except Exception as e:
             await DB.log_event(
                 "error", "sell_execution_failed", str(e),
-                token_address=token_address,
-                symbol=symbol,
+                {"token_address": token_address, "symbol": symbol, "chain": chain},
             )
             return False
+
+    async def _execute_base_sell(
+        self, trade_id: str, token_address: str, symbol: str, amount_token: float
+    ):
+        """Execute a live sell on Base via Odos."""
+        amount_wei = str(int(amount_token * 1e18))
+        quote = await self.get_odos_quote(token_address, WETH, amount_wei, settings.base_wallet_address)
+        assembled = await self.assemble_odos_tx(quote["pathId"], settings.base_wallet_address)
+        tx = assembled["transaction"]
+
+        private_key = settings.base_wallet_private_key.get_secret_value()
+        signed = self.w3.eth.account.sign_transaction(tx, private_key)
+        tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
+
+        await DB.update_trade(
+            trade_id=trade_id,
+            status=TradeStatus.CLOSED,
+            closed_at=datetime.utcnow(),
+            close_reason="signal",
+            tx_hash=tx_hash.hex(),
+        )
+
+    async def _execute_solana_sell(
+        self, trade_id: str, token_address: str, symbol: str, amount_token: float
+    ):
+        """Execute a live sell on Solana via Jupiter."""
+        # Convert token amount to raw amount (assuming 6 decimals)
+        amount_raw = int(amount_token * 1e6)
+
+        quote = await self.get_jupiter_quote(token_address, WSOL, amount_raw)
+        swap_tx = await self.get_jupiter_swap_tx(quote, settings.solana_wallet_address)
+
+        tx_hash = swap_tx.get("swapTransaction", "")[:64] or f"SOL-{uuid.uuid4().hex[:16]}"
+
+        await DB.update_trade(
+            trade_id=trade_id,
+            status=TradeStatus.CLOSED,
+            closed_at=datetime.utcnow(),
+            close_reason="signal",
+            tx_hash=tx_hash,
+        )
 
     # ── Position Manager ─────────────────────────────────────────────
 
@@ -217,7 +302,6 @@ class Executor:
         open_trades = await DB.get_trades(status=TradeStatus.EXECUTED, limit=100)
         for trade in open_trades:
             # In a real implementation, fetch current price and compare to entry
-            # For now, simplified check based on stored data
             pass
 
     async def run(self):

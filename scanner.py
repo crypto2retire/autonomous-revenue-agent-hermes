@@ -463,34 +463,56 @@ Respond ONLY with valid JSON."""
 
     # ── Main Scan Loop ───────────────────────────────────────────────
 
-    async def scan_once(self, chain: str = "base"):
+    async def scan_once(self, chain: str = None):
         """Run one scan cycle: discover → analyze → persist."""
-        await DB.log_event("info", "scan_started", f"Scanning {chain} chain")
+        chains = [chain] if chain else settings.enabled_chains
+        
+        for c in chains:
+            await DB.log_event("info", "scan_started", f"Scanning {c} chain")
+            await self._scan_chain(c)
+            await asyncio.sleep(2)  # Brief pause between chains
 
+    async def _scan_chain(self, chain: str):
+        """Scan a specific chain."""
         all_tokens: List[Dict[str, Any]] = []
 
-        # Fetch from all sources concurrently
-        results = await asyncio.gather(
-            self.get_trending_profiles(chain),
-            self.get_latest_pairs(chain),
-            self.get_top_pairs(chain),
-            self.get_coingecko_trending(),
-            self.get_coingecko_markets(per_page=50),
-            self.get_coingecko_gainers(),
-            self.get_coingecko_new_coins(),
-            self.get_coingecko_onchain_trending(),
-            self.get_dune_trending_tokens(),
-            self.get_new_contracts_from_transfers(limit=30),
-            return_exceptions=True,
-        )
+        # Fetch from all sources concurrently (chain-aware)
+        if chain.lower() == "solana":
+            # Solana-specific sources
+            results = await asyncio.gather(
+                self.get_trending_profiles("solana"),
+                self.get_latest_pairs("solana"),
+                self.get_top_pairs("solana"),
+                self.search_pairs("SOL", "solana"),
+                self.search_pairs("USDC", "solana"),
+                return_exceptions=True,
+            )
+            source_names = [
+                "dexscreener_profiles", "dexscreener_latest_pairs", "dexscreener_top_pairs",
+                "dexscreener_search_sol", "dexscreener_search_usdc",
+            ]
+        else:
+            # Base chain sources (full suite)
+            results = await asyncio.gather(
+                self.get_trending_profiles(chain),
+                self.get_latest_pairs(chain),
+                self.get_top_pairs(chain),
+                self.get_coingecko_trending(),
+                self.get_coingecko_markets(per_page=50),
+                self.get_coingecko_gainers(),
+                self.get_coingecko_new_coins(),
+                self.get_coingecko_onchain_trending(),
+                self.get_dune_trending_tokens(),
+                self.get_new_contracts_from_transfers(limit=30),
+                return_exceptions=True,
+            )
+            source_names = [
+                "dexscreener_profiles", "dexscreener_latest_pairs", "dexscreener_top_pairs",
+                "coingecko_trending", "coingecko_markets", "coingecko_gainers",
+                "coingecko_new", "coingecko_onchain_trending", "dune", "basescan_transfers"
+            ]
 
         # Process results
-        source_names = [
-            "dexscreener_profiles", "dexscreener_latest_pairs", "dexscreener_top_pairs",
-            "coingecko_trending", "coingecko_markets", "coingecko_gainers",
-            "coingecko_new", "coingecko_onchain_trending", "dune", "basescan_transfers"
-        ]
-
         for i, result in enumerate(results):
             if isinstance(result, Exception):
                 await DB.log_event("error", f"{source_names[i]}_failed", str(result))
@@ -501,6 +523,7 @@ Respond ONLY with valid JSON."""
                         if "token_address" in token and "tokenAddress" not in token:
                             token["tokenAddress"] = token["token_address"]
                         token["source"] = source_names[i]
+                        token["chain"] = chain
                         all_tokens.append(token)
 
         # Deduplicate by token address (or symbol+name if no address)
@@ -509,24 +532,23 @@ Respond ONLY with valid JSON."""
         for t in all_tokens:
             addr = t.get("tokenAddress", "")
             if addr:
-                key = addr.lower()
+                key = f"{chain}:{addr.lower()}"
             else:
-                # Use symbol+name as fallback key
-                key = f"{t.get('symbol','')}_{t.get('name','')}".lower()
+                key = f"{chain}:{t.get('symbol','')}_{t.get('name','')}".lower()
             if key and key not in seen:
                 seen.add(key)
                 unique_tokens.append(t)
 
-        await DB.log_event("info", "tokens_discovered", f"Found {len(unique_tokens)} unique tokens from {len([r for r in results if not isinstance(r, Exception)])} sources", {"count": len(unique_tokens)})
+        await DB.log_event("info", "tokens_discovered", f"Found {len(unique_tokens)} unique {chain} tokens from {len([r for r in results if not isinstance(r, Exception)])} sources", {"count": len(unique_tokens), "chain": chain})
 
         # Process tokens concurrently in batches
         batch_size = 5
         for i in range(0, len(unique_tokens), batch_size):
             batch = unique_tokens[i:i + batch_size]
             await asyncio.gather(*[self._process_token(token, chain) for token in batch])
-            await asyncio.sleep(0.5)  # Small delay between batches
+            await asyncio.sleep(0.5)
 
-        await DB.log_event("info", "scan_completed", f"Scanned {len(unique_tokens)} tokens")
+        await DB.log_event("info", "scan_completed", f"Scanned {len(unique_tokens)} {chain} tokens")
 
     async def _process_token(self, token: Dict[str, Any], chain: str = "base"):
         """Process a single token: enrich, analyze, persist."""
@@ -534,8 +556,8 @@ Respond ONLY with valid JSON."""
         if not address:
             return
 
-        # Try to get price from CoinGecko if missing
-        if not token.get("priceUsd"):
+        # Try to get price from CoinGecko if missing (Base only)
+        if chain.lower() == "base" and not token.get("priceUsd"):
             cg_price = await self.get_coingecko_token_price(address, chain)
             if cg_price:
                 token["priceUsd"] = cg_price
@@ -554,27 +576,23 @@ Respond ONLY with valid JSON."""
                 token["marketCap"] = float(best_pair.get("marketCap", 0) or 0)
                 token["priceChange"] = {"h24": float(best_pair.get("priceChange", {}).get("h24", 0) or 0)}
 
-        # Enrich with BaseScan data
-        basescan_info = await self.get_basescan_token_info(address)
-        if basescan_info:
-            token["name"] = basescan_info.get("name") or token.get("name", "Unknown")
-            token["symbol"] = basescan_info.get("symbol") or token.get("symbol", "UNKNOWN")
-            token["basescan"] = basescan_info
-
-        # Get contract creation date
-        contract_info = await self.get_basescan_contract_creation(address)
-        if contract_info:
-            token["contract_creation"] = contract_info
-
-        # Get deployer address
+        # Enrich with chain-specific data
         deployer_address = None
-        if contract_info and isinstance(contract_info, dict):
-            deployer_address = contract_info.get("contractCreator")
+        if chain.lower() == "base":
+            basescan_info = await self.get_basescan_token_info(address)
+            if basescan_info:
+                token["name"] = basescan_info.get("name") or token.get("name", "Unknown")
+                token["symbol"] = basescan_info.get("symbol") or token.get("symbol", "UNKNOWN")
+                token["basescan"] = basescan_info
 
-        # Get top holders
-        holders = await self.get_basescan_token_holders(address, top_n=5)
-        if holders:
-            token["top_holders"] = holders
+            contract_info = await self.get_basescan_contract_creation(address)
+            if contract_info:
+                token["contract_creation"] = contract_info
+                deployer_address = contract_info.get("contractCreator")
+
+            holders = await self.get_basescan_token_holders(address, top_n=5)
+            if holders:
+                token["top_holders"] = holders
 
         # AI analysis
         analysis = await self.analyze_opportunity(token)
@@ -583,7 +601,6 @@ Respond ONLY with valid JSON."""
         existing = await DB.get_coin(address)
         if existing:
             await DB.update_coin_signal(address, analysis["signal"], analysis["confidence"])
-            # Record price history for long-term tracking
             await DB.record_price_history(
                 token_address=address,
                 symbol=token.get("symbol", "UNKNOWN"),
@@ -604,18 +621,19 @@ Respond ONLY with valid JSON."""
                 signal=analysis["signal"],
                 deployer_address=deployer_address or "",
                 discovery_source=token.get("source", "unknown"),
+                chain=chain,
                 extra_data={
                     "reasoning": analysis["reasoning"],
                     "risk_level": analysis["risk_level"],
                     "tags": analysis["tags"],
                     "source": token.get("source", "unknown"),
-                    "basescan": basescan_info,
-                    "contract_creation": contract_info,
-                    "top_holders": holders,
+                    "chain": chain,
+                    "basescan": token.get("basescan") if chain.lower() == "base" else None,
+                    "contract_creation": token.get("contract_creation") if chain.lower() == "base" else None,
+                    "top_holders": token.get("top_holders") if chain.lower() == "base" else None,
                 },
             )
             
-            # Update deployer stats
             if deployer_address:
                 await DB.update_deployer_stats(deployer_address)
 
@@ -623,8 +641,8 @@ Respond ONLY with valid JSON."""
         if analysis["signal"] == "buy" and analysis["confidence"] > 0.7:
             await DB.log_event(
                 "info", "strong_buy_signal",
-                f"{token.get('symbol', 'UNKNOWN')}: {analysis['reasoning']}",
-                {"token_address": address, "symbol": token.get("symbol", ""), "confidence": analysis["confidence"], "price": token.get("priceUsd", 0)},
+                f"{token.get('symbol', 'UNKNOWN')} ({chain}): {analysis['reasoning']}",
+                {"token_address": address, "symbol": token.get("symbol", ""), "chain": chain, "confidence": analysis["confidence"], "price": token.get("priceUsd", 0)},
             )
 
     async def run(self):

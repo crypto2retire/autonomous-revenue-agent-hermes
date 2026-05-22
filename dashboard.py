@@ -29,6 +29,7 @@ async def get_coins(
     min_score: Optional[float] = None,
     deployer: Optional[str] = None,
     is_rugged: Optional[bool] = None,
+    chain: Optional[str] = None,
     limit: int = Query(100, ge=1, le=500),
 ):
     coins = await DB.get_all_coins(
@@ -36,6 +37,7 @@ async def get_coins(
         min_score=min_score,
         deployer_address=deployer,
         is_rugged=is_rugged,
+        chain=chain,
         limit=limit,
     )
     # Build stats
@@ -47,6 +49,10 @@ async def get_coins(
     avoid = sum(1 for c in coins if c.signal == "avoid")
     hold = sum(1 for c in coins if c.signal == "hold")
     rugged = sum(1 for c in coins if c.is_rugged)
+    
+    # Chain breakdown
+    base_count = sum(1 for c in coins if c.chain == "base")
+    solana_count = sum(1 for c in coins if c.chain == "solana")
     
     # Calculate average confidence
     avg_confidence = 0.0
@@ -74,6 +80,8 @@ async def get_coins(
     
     stats = {
         "total_coins": total,
+        "base_coins": base_count,
+        "solana_coins": solana_count,
         "buy_signals": buy_signals,
         "sell_signals": sell_signals,
         "bullish_signals": bullish,
@@ -184,8 +192,8 @@ async def get_price_history(token_address: str, hours: int = 24):
 # ── Trades ─────────────────────────────────────────────────────────
 
 @app.get("/api/trades")
-async def get_trades(status: Optional[str] = None, limit: int = 100):
-    trades = await DB.get_trades(status=status, limit=limit)
+async def get_trades(status: Optional[str] = None, chain: Optional[str] = None, limit: int = 100):
+    trades = await DB.get_trades(status=status, chain=chain, limit=limit)
     return {"trades": [t.to_dict() for t in trades], "count": len(trades)}
 
 

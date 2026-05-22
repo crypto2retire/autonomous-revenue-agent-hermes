@@ -22,9 +22,15 @@ class Settings(BaseSettings):
     venice_model: str = "claude-opus-4.6"
     venice_base_url: str = "https://api.venice.ai/api/v1"
 
-    # Wallet
+    # Base Chain
     base_wallet_private_key: SecretStr = Field(..., description="Base chain private key")
     base_wallet_address: str = Field(..., description="Base chain wallet address")
+    base_rpc: str = "https://mainnet.base.org"
+
+    # Solana Chain
+    solana_wallet_private_key: Optional[SecretStr] = Field(None, description="Solana wallet private key (base58)")
+    solana_wallet_address: Optional[str] = Field(None, description="Solana wallet address")
+    solana_rpc: str = "https://api.mainnet-beta.solana.com"
 
     # Database
     database_url: SecretStr = Field(..., description="PostgreSQL connection string")
@@ -48,6 +54,7 @@ class Settings(BaseSettings):
     max_trade_size_usd: float = 1000.0
     max_slippage: float = 0.02
     scan_interval_seconds: int = 300
+    chains_to_scan: str = Field(default="base,solana", description="Comma-separated chains to scan")
 
     # Risk
     max_daily_loss_usd: float = 100.0
@@ -66,6 +73,10 @@ class Settings(BaseSettings):
     @property
     def is_paper(self) -> bool:
         return self.agent_mode == "paper"
+
+    @property
+    def enabled_chains(self) -> list:
+        return [c.strip().lower() for c in self.chains_to_scan.split(",") if c.strip()]
 
     class Config:
         env_file = ".env"
