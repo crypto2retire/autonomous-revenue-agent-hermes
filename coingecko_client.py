@@ -42,7 +42,15 @@ class CoinGeckoClient:
         """Make a GET request to CoinGecko API."""
         client = await self._get_client()
         url = f"{self.base_url}{endpoint}"
-        resp = await client.get(url, params=params, headers=self._headers())
+        # Demo keys work as query param; pro keys as header
+        req_params = dict(params) if params else {}
+        headers = {}
+        if self.api_key:
+            if self.plan == "demo":
+                req_params["x_cg_demo_api_key"] = self.api_key.get_secret_value()
+            else:
+                headers["x-cg-pro-api-key"] = self.api_key.get_secret_value()
+        resp = await client.get(url, params=req_params, headers=headers)
         resp.raise_for_status()
         return resp.json()
 
