@@ -12,7 +12,7 @@ import os
 import uvicorn
 
 from config import get_settings
-from database import init_db, DB
+from database import DB
 from scanner import Scanner
 from executor import Executor
 from dashboard import app
@@ -53,7 +53,7 @@ async def run_server():
 async def main():
     """Start everything."""
     # Initialize database
-    await init_db()
+    await DB.init()
     await DB.log_event("info", "agent_started", "Crypto trading agent starting up")
 
     # Run scanner, executor, and server concurrently
