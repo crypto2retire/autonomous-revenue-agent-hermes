@@ -162,14 +162,19 @@ class BaseScanClient:
         })
         return data.get("result", "")
 
-    async def get_contract_source(self, address: str) -> str:
+    async def get_contract_source(self, address: str) -> Dict[str, Any]:
         """Get contract source code for a verified contract."""
         data = await self._get({
             "module": "contract",
             "action": "getsourcecode",
             "address": address,
         })
-        return data.get("result", [{}])[0]
+        result = data.get("result", [])
+        if isinstance(result, list) and len(result) > 0:
+            return result[0]
+        elif isinstance(result, dict):
+            return result
+        return {}
 
     async def get_contract_creation(self, addresses: List[str]) -> List[Dict[str, Any]]:
         """Get contract creation details."""
@@ -266,7 +271,12 @@ class BaseScanClient:
             "action": "tokeninfo",
             "contractaddress": contract_address,
         })
-        return data.get("result", [{}])[0]
+        result = data.get("result", [])
+        if isinstance(result, list) and len(result) > 0:
+            return result[0]
+        elif isinstance(result, dict):
+            return result
+        return {}
 
     async def get_token_holder_list(
         self,
