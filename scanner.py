@@ -53,10 +53,10 @@ class Scanner:
             return []
 
     async def get_latest_pairs(self, chain: str = "base") -> List[Dict[str, Any]]:
-        """Get latest created pairs on a chain."""
-        url = f"{DEXSCREENER_BASE}/latest/dex/pairs"
+        """Get latest created pairs on a chain via search."""
+        url = f"{DEXSCREENER_BASE}/latest/dex/search"
         try:
-            resp = await self.http.get(url)
+            resp = await self.http.get(url, params={"q": chain})
             resp.raise_for_status()
             data = resp.json()
             pairs = data.get("pairs", [])
@@ -69,10 +69,10 @@ class Scanner:
             return []
 
     async def get_top_pairs(self, chain: str = "base") -> List[Dict[str, Any]]:
-        """Get top pairs by volume on a chain."""
-        url = f"{DEXSCREENER_BASE}/latest/dex/pairs"
+        """Get top pairs by volume on a chain via search."""
+        url = f"{DEXSCREENER_BASE}/latest/dex/search"
         try:
-            resp = await self.http.get(url)
+            resp = await self.http.get(url, params={"q": chain})
             resp.raise_for_status()
             data = resp.json()
             pairs = data.get("pairs", [])
