@@ -10,6 +10,7 @@ import httpx
 from config import get_settings
 from database import DB
 from coingecko_client import get_coingecko
+from dune_client import get_dune
 
 settings = get_settings()
 
@@ -24,10 +25,12 @@ class Scanner:
         self.http = httpx.AsyncClient(timeout=30.0)
         self.running = False
         self.cg = get_coingecko()
+        self.dune = get_dune()
 
     async def close(self):
         await self.http.aclose()
         await self.cg.close()
+        await self.dune.close()
 
     # ── DexScreener API ──────────────────────────────────────────────
 
@@ -161,6 +164,47 @@ class Scanner:
             await DB.log_event("error", "coingecko_market_failed", str(e), {"coin_id": coin_id})
             return {}
 
+    # ── Dune Analytics ───────────────────────────────────────────────
+
+    async def get_dune_trending_tokens(self) -> List[Dict[str, Any]]:
+        """Get trending tokens from Dune Analytics queries."""
+        try:
+            # Query: Trending tokens on Base by volume (example query ID)
+            # You can replace this with your own Dune query IDs
+            result = await self.dune.execute_and_wait(
+                query_id=12345,  # Replace with actual query ID for trending tokens
+            )
+            tokens = []
+            for row in result.get("result", {}).get("rows", []):
+                tokens.append({
+                    "tokenAddress": row.get("token_address", ""),
+                    "symbol": row.get("symbol", "UNKNOWN"),
+                    "name": row.get("name", "Unknown"),
+                    "priceUsd": row.get("price", 0),
+                    "volume": {"h24": row.get("volume_24h", 0)},
+                    "liquidity": {"usd": row.get("liquidity", 0)},
+                    "marketCap": row.get("market_cap", 0),
+                    "priceChange": {"h24": row.get("price_change_24h", 0)},
+                    "source": "dune",
+                })
+            return tokens
+        except Exception as e:
+            await DB.log_event("error", "dune_trending_failed", str(e))
+            return []
+
+    async def get_dune_wallet_stats(self, wallet_address: str) -> Dict[str, Any]:
+        """Get on-chain stats for a wallet address from Dune."""
+        try:
+            result = await self.dune.execute_and_wait(
+                query_id=12346,  # Replace with actual query ID for wallet stats
+                parameters=[{"key": "wallet_address", "value": wallet_address}],
+            )
+            rows = result.get("result", {}).get("rows", [])
+            return rows[0] if rows else {}
+        except Exception as e:
+            await DB.log_event("error", "dune_wallet_failed", str(e), {"wallet": wallet_address})
+            return {}
+
     # ── Venice AI Analysis ───────────────────────────────────────────
 
     async def analyze_opportunity(self, token: Dict[str, Any]) -> Dict[str, Any]:
@@ -276,6 +320,10 @@ Respond ONLY with valid JSON."""
         # Source 4: CoinGecko new coins
         cg_new = await self.get_coingecko_new_coins()
         all_tokens.extend(cg_new)
+
+        # Source 5: Dune Analytics trending
+        dune_tokens = await self.get_dune_trending_tokens()
+        all_tokens.extend(dune_tokens)
 
         # Deduplicate by token address
         seen = set()
