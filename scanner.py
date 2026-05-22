@@ -23,7 +23,10 @@ class Scanner:
     """Scans for crypto opportunities and persists everything to the watchlist."""
 
     def __init__(self):
-        self.http = httpx.AsyncClient(timeout=30.0)
+        self.http = httpx.AsyncClient(
+            timeout=30.0,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; CryptoAgent/1.0)"},
+        )
         self.running = False
         self.cg = get_coingecko()
         self.dune = get_dune()
