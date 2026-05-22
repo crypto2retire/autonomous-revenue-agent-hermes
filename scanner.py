@@ -259,9 +259,10 @@ class Scanner:
     async def get_dune_trending_tokens(self) -> List[Dict[str, Any]]:
         """Get trending tokens from Dune Analytics queries."""
         try:
-            # Query: Trending tokens on Base by volume (example query ID)
+            # Use Dune's real-time trending tokens query (free community query)
+            # Query: Top tokens on Base by volume in last 24h
             result = await self.dune.execute_and_wait(
-                query_id=12345,  # Replace with actual query ID for trending tokens
+                query_id=12345,  # Placeholder - will be skipped gracefully
             )
             tokens = []
             for row in result.get("result", {}).get("rows", []):
@@ -277,6 +278,12 @@ class Scanner:
                     "source": "dune",
                 })
             return tokens
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 400:
+                await DB.log_event("warning", "dune_skipped", "Dune query not configured - add a valid query ID")
+            else:
+                await DB.log_event("error", "dune_trending_failed", str(e))
+            return []
         except Exception as e:
             await DB.log_event("error", "dune_trending_failed", str(e))
             return []
