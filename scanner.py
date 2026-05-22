@@ -54,25 +54,31 @@ class Scanner:
 
     async def get_latest_pairs(self, chain: str = "base") -> List[Dict[str, Any]]:
         """Get latest created pairs on a chain."""
-        url = f"{DEXSCREENER_BASE}/latest/dex/pairs/{chain}"
+        url = f"{DEXSCREENER_BASE}/latest/dex/pairs"
         try:
             resp = await self.http.get(url)
             resp.raise_for_status()
             data = resp.json()
             pairs = data.get("pairs", [])
+            # Filter by chain
+            if chain:
+                pairs = [p for p in pairs if p.get("chainId", "").lower() == chain.lower()]
             return pairs[:50]
         except Exception as e:
-            await DB.log_event("error", "dexscreener_pairs_failed", str(e))
+            await DB.log_event("error", "dexscreener_latest_pairs_failed", str(e))
             return []
 
     async def get_top_pairs(self, chain: str = "base") -> List[Dict[str, Any]]:
         """Get top pairs by volume on a chain."""
-        url = f"{DEXSCREENER_BASE}/latest/dex/pairs/{chain}"
+        url = f"{DEXSCREENER_BASE}/latest/dex/pairs"
         try:
             resp = await self.http.get(url)
             resp.raise_for_status()
             data = resp.json()
             pairs = data.get("pairs", [])
+            # Filter by chain
+            if chain:
+                pairs = [p for p in pairs if p.get("chainId", "").lower() == chain.lower()]
             # Sort by volume
             pairs.sort(key=lambda p: float(p.get("volume", {}).get("h24", 0) or 0), reverse=True)
             return pairs[:50]
@@ -324,15 +330,20 @@ class Scanner:
         """Discover new contracts by looking at recent token transfers."""
         try:
             # Get recent token transfers for a known token to find new contracts
-            # This is a simplified approach - in production you'd use event logs
             transfers = await self.basescan.get_token_transfers(
                 address="0x4200000000000000000000000000000000000006",  # WETH on Base
                 offset=limit,
             )
+            # Handle string response (error message)
+            if isinstance(transfers, str):
+                await DB.log_event("warning", "basescan_transfers_string", f"Got string response: {transfers[:100]}")
+                return []
             # Extract unique contract addresses
             seen = set()
             contracts = []
             for tx in transfers:
+                if not isinstance(tx, dict):
+                    continue
                 contract = tx.get("contractAddress", "")
                 if contract and contract not in seen:
                     seen.add(contract)
