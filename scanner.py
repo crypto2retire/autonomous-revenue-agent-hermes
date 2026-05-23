@@ -586,9 +586,6 @@ Respond ONLY with valid JSON."""
             return {"signal": "avoid", "confidence": 0.92, "reasoning": f"24h volume too low (${volume:,.0f})", "risk_level": "high", "tags": "low-volume"}
         if price_change < -20:
             return {"signal": "avoid", "confidence": 0.90, "reasoning": f"Sharp 24h drawdown ({price_change:.1f}%)", "risk_level": "high", "tags": "drawdown"}
-        if price_change > 200:
-            return {"signal": "avoid", "confidence": 0.91, "reasoning": f"Extreme 24h pump ({price_change:.1f}%) likely unsafe for entry", "risk_level": "high", "tags": "extreme-pump"}
-
         score = 0.0
         tags = []
         if liquidity >= 50000:
