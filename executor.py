@@ -44,6 +44,9 @@ class Executor:
             private_key=settings.solana_wallet_private_key.get_secret_value() if settings.solana_wallet_private_key else None,
         )
         self.running = False
+        # Rate limit tracking for Odos
+        self._odos_last_call = 0
+        self._odos_min_interval = 1.0  # seconds between Odos calls
 
     async def close(self):
         await self.http.aclose()
@@ -52,6 +55,14 @@ class Executor:
 
     # ── Odos (Base) ──────────────────────────────────────────────────
 
+    async def _odos_rate_limit(self):
+        """Enforce minimum interval between Odos API calls."""
+        now = asyncio.get_event_loop().time()
+        elapsed = now - self._odos_last_call
+        if elapsed < self._odos_min_interval:
+            await asyncio.sleep(self._odos_min_interval - elapsed)
+        self._odos_last_call = asyncio.get_event_loop().time()
+
     async def get_odos_quote(
         self,
         token_in: str,
@@ -59,7 +70,8 @@ class Executor:
         amount_in: str,
         sender: str,
     ) -> dict:
-        """Get Odos swap quote."""
+        """Get Odos swap quote with rate limiting and retry."""
+        await self._odos_rate_limit()
         url = f"{ODOS_API}/sor/quote/v2"
         payload = {
             "chainId": 8453,
@@ -72,17 +84,38 @@ class Executor:
             "simulate": settings.is_paper,
             "pathViz": False,
         }
-        resp = await self.http.post(url, json=payload)
-        resp.raise_for_status()
-        return resp.json()
+        for attempt in range(3):
+            try:
+                resp = await self.http.post(url, json=payload)
+                resp.raise_for_status()
+                return resp.json()
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
+                    wait = (attempt + 1) * 2
+                    await DB.log_event("warning", "odos_rate_limited", f"Attempt {attempt+1}/3, waiting {wait}s")
+                    await asyncio.sleep(wait)
+                    continue
+                raise
+        raise RuntimeError("Odos API rate limited after 3 retries")
 
     async def assemble_odos_tx(self, path_id: str, sender: str) -> dict:
-        """Assemble the transaction from Odos."""
+        """Assemble the transaction from Odos with rate limiting."""
+        await self._odos_rate_limit()
         url = f"{ODOS_API}/sor/assemble"
         payload = {"userAddr": sender, "pathId": path_id, "simulate": settings.is_paper}
-        resp = await self.http.post(url, json=payload)
-        resp.raise_for_status()
-        return resp.json()
+        for attempt in range(3):
+            try:
+                resp = await self.http.post(url, json=payload)
+                resp.raise_for_status()
+                return resp.json()
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
+                    wait = (attempt + 1) * 2
+                    await DB.log_event("warning", "odos_rate_limited", f"Assemble attempt {attempt+1}/3, waiting {wait}s")
+                    await asyncio.sleep(wait)
+                    continue
+                raise
+        raise RuntimeError("Odos assemble rate limited after 3 retries")
 
     # ── Jupiter (Solana) ─────────────────────────────────────────────
 
