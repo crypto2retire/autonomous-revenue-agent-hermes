@@ -54,15 +54,15 @@ class JupiterClient:
         return resp.json()
 
     async def get_price(self, mint: str, vs_token: str = "USDC") -> Optional[float]:
-        """Get token price from Jupiter price API."""
-        url = f"{JUPITER_API}/price/v2"
-        params = {"ids": mint, "vsToken": vs_token}
+        """Get token price from Jupiter price API v3."""
+        url = f"{JUPITER_API}/price/v3"
+        params = {"ids": mint}
         try:
             resp = await self.http.get(url, params=params)
             resp.raise_for_status()
             data = resp.json()
-            price_data = data.get("data", {}).get(mint, {})
-            return float(price_data.get("price", 0))
+            price_data = data.get(mint, {})
+            return float(price_data.get("usdPrice", 0))
         except Exception:
             return None
 
