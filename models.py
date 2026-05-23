@@ -114,6 +114,12 @@ class CoinWatch(Base):
     market_cap = Column(Numeric(24, 6))
     holder_count = Column(Integer)
     
+    # Intraday price changes (computed from price_history)
+    price_change_1m_pct = Column(Numeric(10, 4))
+    price_change_5m_pct = Column(Numeric(10, 4))
+    price_change_30m_pct = Column(Numeric(10, 4))
+    price_change_1h_pct = Column(Numeric(10, 4))
+    
     # AI Analysis
     signal = Column(String(20))
     confidence = Column(Numeric(5, 4))
@@ -161,6 +167,10 @@ class CoinWatch(Base):
             "first_price_usd": _f(self.first_price_usd),
             "last_price_usd": _f(self.last_price_usd),
             "price_change_pct": _f(self.price_change_pct),
+            "price_change_1m_pct": _f(self.price_change_1m_pct),
+            "price_change_5m_pct": _f(self.price_change_5m_pct),
+            "price_change_30m_pct": _f(self.price_change_30m_pct),
+            "price_change_1h_pct": _f(self.price_change_1h_pct),
             "volume_24h": _f(self.volume_24h),
             "liquidity_usd": _f(self.liquidity_usd),
             "market_cap": _f(self.market_cap),

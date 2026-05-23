@@ -439,7 +439,13 @@ async def dashboard():
                         <th>Symbol</th>
                         <th>Signal</th>
                         <th>Price</th>
-                        <th>Peak Gain</th>
+                        <th>1m</th>
+                        <th>5m</th>
+                        <th>30m</th>
+                        <th>1h</th>
+                        <th>Volume 24h</th>
+                        <th>Liquidity</th>
+                        <th>Holders</th>
                         <th>AI Score</th>
                         <th>Scans</th>
                         <th>Deployer</th>
@@ -652,7 +658,16 @@ async def dashboard():
         function fmtPct(n) {
             if (n === null || n === undefined) return '-';
             const cls = n >= 0 ? 'positive' : 'negative';
-            return '<span class="' + cls + '">' + (n >= 0 ? '+' : '') + n.toFixed(2) + '%</span>';
+            return '<span class="' + cls + '" style="font-weight:600">' + (n >= 0 ? '+' : '') + n.toFixed(2) + '%</span>';
+        }
+
+        function fmtCompact(n) {
+            if (n === null || n === undefined || n === 0) return '-';
+            const abs = Math.abs(n);
+            if (abs >= 1e9) return '$' + (n/1e9).toFixed(2) + 'B';
+            if (abs >= 1e6) return '$' + (n/1e6).toFixed(2) + 'M';
+            if (abs >= 1e3) return '$' + (n/1e3).toFixed(1) + 'K';
+            return '$' + n.toFixed(0);
         }
 
         function timeAgo(iso) {
@@ -698,7 +713,13 @@ async def dashboard():
                     <td><strong>${c.symbol}</strong><br><small style="color:#8892a0">${c.name || ''}</small></td>
                     <td><span class="badge badge-${c.signal}">${c.signal?.toUpperCase()}</span></td>
                     <td>${fmtNum(c.last_price_usd || c.first_price_usd, 6)}</td>
-                    <td>${fmtPct(c.peak_gain_pct)}</td>
+                    <td class="${c.price_change_1m_pct > 0 ? 'positive' : c.price_change_1m_pct < 0 ? 'negative' : ''}">${fmtPct(c.price_change_1m_pct)}</td>
+                    <td class="${c.price_change_5m_pct > 0 ? 'positive' : c.price_change_5m_pct < 0 ? 'negative' : ''}">${fmtPct(c.price_change_5m_pct)}</td>
+                    <td class="${c.price_change_30m_pct > 0 ? 'positive' : c.price_change_30m_pct < 0 ? 'negative' : ''}">${fmtPct(c.price_change_30m_pct)}</td>
+                    <td class="${c.price_change_1h_pct > 0 ? 'positive' : c.price_change_1h_pct < 0 ? 'negative' : ''}">${fmtPct(c.price_change_1h_pct)}</td>
+                    <td>${fmtCompact(c.volume_24h)}</td>
+                    <td>${fmtCompact(c.liquidity_usd)}</td>
+                    <td>${c.holder_count ? c.holder_count.toLocaleString() : '-'}</td>
                     <td>${((c.confidence || 0) * 100).toFixed(0)}%</td>
                     <td>${c.scan_count || 0}</td>
                     <td>${c.deployer_address ? `<a href="#" onclick="event.stopPropagation();showDeployer('${c.deployer_address}');return false">${shortAddr(c.deployer_address)}</a>` : '-'}</td>

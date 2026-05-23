@@ -835,6 +835,7 @@ Respond ONLY with valid JSON."""
                 signal=analysis["signal"],
                 confidence=analysis["confidence"],
             )
+            await DB.update_coin_intraday_changes(address)
         else:
             await DB.add_coin(
                 token_address=address,
@@ -879,6 +880,7 @@ Respond ONLY with valid JSON."""
                 signal=analysis["signal"],
                 confidence=analysis["confidence"],
             )
+            await DB.update_coin_intraday_changes(address)
             
             if deployer_address:
                 await DB.update_deployer_stats(deployer_address)

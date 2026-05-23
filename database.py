@@ -222,6 +222,41 @@ class DB:
             return result.scalars().all()
 
     @staticmethod
+    async def update_coin_intraday_changes(token_address: str):
+        """Compute and store 1m, 5m, 30m, 1h price changes from price_history."""
+        from sqlalchemy import select as sa_select
+        now = datetime.utcnow()
+        intervals = {
+            "price_change_1m_pct": now - timedelta(minutes=1),
+            "price_change_5m_pct": now - timedelta(minutes=5),
+            "price_change_30m_pct": now - timedelta(minutes=30),
+            "price_change_1h_pct": now - timedelta(hours=1),
+        }
+        async with async_session() as session:
+            result = await session.execute(
+                sa_select(CoinWatch).where(CoinWatch.token_address == token_address)
+            )
+            coin = result.scalar_one_or_none()
+            if not coin or coin.last_price_usd is None:
+                return
+            current_price = float(coin.last_price_usd)
+            for column_name, since in intervals.items():
+                hist_result = await session.execute(
+                    sa_select(PriceHistory)
+                    .where(PriceHistory.token_address == token_address)
+                    .where(PriceHistory.created_at >= since)
+                    .order_by(PriceHistory.created_at)
+                    .limit(1)
+                )
+                hist = hist_result.scalar_one_or_none()
+                if hist and hist.price_usd is not None:
+                    old_price = float(hist.price_usd)
+                    if old_price > 0:
+                        pct = ((current_price - old_price) / old_price) * 100
+                        setattr(coin, column_name, pct)
+            await session.commit()
+
+    @staticmethod
     async def update_coin_price(token_address: str, current_price: float):
         """Update current price and calculate price change."""
         async with async_session() as session:
