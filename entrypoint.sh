@@ -1,5 +1,5 @@
 #!/bin/sh
-# Ensure data directory is writable before starting app
+# Ensure data directory exists for persistent volume
 mkdir -p /data
 chmod 777 /data
 ls -la /data
