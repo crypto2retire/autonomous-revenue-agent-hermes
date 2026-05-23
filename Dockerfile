@@ -13,4 +13,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Run the autonomous revenue agent (not the Hermes CLI)
-CMD ["python", "-c", "import asyncio; from main import main; asyncio.run(main())"]
+CMD ["sh", "entrypoint.sh"]
