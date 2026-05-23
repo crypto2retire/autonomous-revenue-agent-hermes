@@ -337,6 +337,14 @@ class Scanner:
             await DB.log_event("warning", "basescan_holder_count_failed", str(e), {"token_address": token_address})
 
         try:
+            scraped_count = await self.basescan.scrape_token_holder_count(token_address)
+            if scraped_count is not None:
+                await DB.log_event("info", "holder_count_scrape_fallback", f"Using BaseScan page holder count: {scraped_count}", {"token_address": token_address})
+                return scraped_count
+        except Exception as e:
+            await DB.log_event("warning", "basescan_holder_scrape_failed", str(e), {"token_address": token_address})
+
+        try:
             active_count = await self.basescan.get_token_active_holder_count(token_address)
             if active_count is not None:
                 await DB.log_event("info", "holder_count_active_fallback", f"Using recent active holder count proxy: {active_count}", {"token_address": token_address})

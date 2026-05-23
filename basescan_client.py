@@ -1,6 +1,7 @@
 """BaseScan API client for Base chain on-chain data."""
 
 from typing import Any, Dict, List, Optional
+import re
 
 import httpx
 
@@ -350,6 +351,28 @@ class BaseScanClient:
                 if wallet and wallet != zero:
                     holders.add(wallet)
         return len(holders) if holders else None
+
+    async def scrape_token_holder_count(self, contract_address: str) -> Optional[int]:
+        """Last-resort holder count from the public BaseScan token page metadata."""
+        client = await self._get_client()
+        resp = await client.get(
+            f"https://basescan.org/token/{contract_address}",
+            headers={"User-Agent": "Mozilla/5.0 (compatible; CryptoAgent/1.0)"},
+        )
+        resp.raise_for_status()
+        html = resp.text
+        patterns = (
+            r"Holders:\s*([0-9,]+)",
+            r"<h4[^>]*>\s*Holders\s*</h4>\s*<div[^>]*>\s*<div>\s*([0-9,]+)",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, html, re.IGNORECASE | re.DOTALL)
+            if match:
+                try:
+                    return int(match.group(1).replace(",", ""))
+                except ValueError:
+                    return None
+        return None
 
     async def get_token_holder_list(
         self,
