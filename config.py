@@ -56,17 +56,23 @@ class Settings(BaseSettings):
 
     # Trading
     agent_mode: str = Field(default="paper", pattern="^(paper|live)$")
-    min_trade_size_usd: float = 10.0
-    max_trade_size_usd: float = 1000.0
+    min_trade_size_usd: float = 1.0
+    max_trade_size_usd: float = 50.0
+    default_trade_size_usd: float = 5.0
     max_slippage: float = 0.02
     scan_interval_seconds: int = 300
     chains_to_scan: str = Field(default="base,solana", description="Comma-separated chains to scan")
 
     # Risk
-    max_daily_loss_usd: float = 100.0
+    max_daily_loss_usd: float = 50.0
     max_positions: int = 10
-    stop_loss_pct: float = 0.05
-    take_profit_pct: float = 0.10
+    stop_loss_pct: float = 0.15
+    take_profit_pct: float = 0.25
+
+    # Pump.fun specific
+    pumpfun_min_trade_usd: float = 1.0
+    pumpfun_max_trade_usd: float = 10.0
+    pumpfun_scan_interval_seconds: int = 60
 
     # Helius
     helius_api_key: Optional[SecretStr] = Field(None, description="Helius API key for Solana RPC")

@@ -730,7 +730,7 @@ Respond ONLY with valid JSON."""
         if live_requested and not settings.is_live:
             await DB.log_event("warning", "live_trading_env_guard", "Dashboard requested live trading, but AGENT_MODE is paper; executing paper trade only")
 
-        amount_usd = max(settings.min_trade_size_usd, min(settings.max_trade_size_usd, settings.min_trade_size_usd))
+        amount_usd = max(settings.min_trade_size_usd, min(settings.max_trade_size_usd, settings.default_trade_size_usd))
         trade_id = await self.executor.execute_buy(
             token_address=address,
             symbol=token.get("symbol", "UNKNOWN"),
