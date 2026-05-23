@@ -1,10 +1,10 @@
-"""Trade executor — paper and live trading via Odos (Base) or Jupiter (Solana)."""
+"""Trade executor — paper and live trading via Odos V3 (Base) or Jupiter (Solana)."""
 
 import asyncio
 import json
 import uuid
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, Dict, Any
 
 import httpx
 try:
@@ -23,7 +23,7 @@ settings = get_settings()
 # Base chain config
 BASE_RPC = "https://mainnet.base.org"
 ODOS_API = "https://api.odos.xyz"
-ODOS_ROUTER = "0x19cEeAdF6158dE9B5a5e68EED30Eab821b2E749e"
+ODOS_ROUTER_V3 = "0x0D05a7D3448512B78fa8A9e46c4872C88C4a0D05"
 WETH = "0x4200000000000000000000000000000000000006"
 
 # Solana config
@@ -33,7 +33,7 @@ WSOL = "So11111111111111111111111111111111111111112"  # Wrapped SOL
 
 
 class Executor:
-    """Executes trades via Odos (Base) or Jupiter (Solana)."""
+    """Executes trades via Odos V3 (Base) or Jupiter (Solana)."""
 
     def __init__(self):
         self.http = httpx.AsyncClient(timeout=60.0)
@@ -46,14 +46,21 @@ class Executor:
         self.running = False
         # Rate limit tracking for Odos
         self._odos_last_call = 0
-        self._odos_min_interval = 1.0  # seconds between Odos calls
+        self._odos_min_interval = 1.1  # 1.1s — free tier is 1 RPS, stay slightly under
+
+    def _odos_headers(self) -> Dict[str, str]:
+        """Build Odos request headers. Include API key if configured."""
+        headers = {"Content-Type": "application/json"}
+        if settings.odos_api_key:
+            headers["x-api-key"] = settings.odos_api_key.get_secret_value()
+        return headers
 
     async def close(self):
         await self.http.aclose()
         await self.jupiter.close()
         await self.solana.close()
 
-    # ── Odos (Base) ──────────────────────────────────────────────────
+    # ── Odos V3 (Base) ───────────────────────────────────────────────
 
     async def _odos_rate_limit(self):
         """Enforce minimum interval between Odos API calls."""
@@ -63,6 +70,28 @@ class Executor:
             await asyncio.sleep(self._odos_min_interval - elapsed)
         self._odos_last_call = asyncio.get_event_loop().time()
 
+    async def _odos_post(self, url: str, payload: dict) -> dict:
+        """POST to Odos with rate limiting, retries, and auth."""
+        await self._odos_rate_limit()
+        headers = self._odos_headers()
+        for attempt in range(3):
+            try:
+                resp = await self.http.post(url, json=payload, headers=headers)
+                resp.raise_for_status()
+                return resp.json()
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
+                    wait = (attempt + 1) * 2
+                    await DB.log_event(
+                        "warning", "odos_rate_limited",
+                        f"Attempt {attempt + 1}/3, waiting {wait}s",
+                        {"url": url},
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                raise
+        raise RuntimeError(f"Odos API rate limited after 3 retries: {url}")
+
     async def get_odos_quote(
         self,
         token_in: str,
@@ -70,9 +99,8 @@ class Executor:
         amount_in: str,
         sender: str,
     ) -> dict:
-        """Get Odos swap quote with rate limiting and retry."""
-        await self._odos_rate_limit()
-        url = f"{ODOS_API}/sor/quote/v2"
+        """Get Odos V3 swap quote."""
+        url = f"{ODOS_API}/sor/quote/v3"
         payload = {
             "chainId": 8453,
             "inputTokens": [{"tokenAddress": token_in, "amount": amount_in}],
@@ -83,39 +111,15 @@ class Executor:
             "sourceWhitelist": [],
             "simulate": settings.is_paper,
             "pathViz": False,
+            "compact": True,
         }
-        for attempt in range(3):
-            try:
-                resp = await self.http.post(url, json=payload)
-                resp.raise_for_status()
-                return resp.json()
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 429:
-                    wait = (attempt + 1) * 2
-                    await DB.log_event("warning", "odos_rate_limited", f"Attempt {attempt+1}/3, waiting {wait}s")
-                    await asyncio.sleep(wait)
-                    continue
-                raise
-        raise RuntimeError("Odos API rate limited after 3 retries")
+        return await self._odos_post(url, payload)
 
     async def assemble_odos_tx(self, path_id: str, sender: str) -> dict:
-        """Assemble the transaction from Odos with rate limiting."""
-        await self._odos_rate_limit()
+        """Assemble the transaction from Odos V3 quote."""
         url = f"{ODOS_API}/sor/assemble"
         payload = {"userAddr": sender, "pathId": path_id, "simulate": settings.is_paper}
-        for attempt in range(3):
-            try:
-                resp = await self.http.post(url, json=payload)
-                resp.raise_for_status()
-                return resp.json()
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 429:
-                    wait = (attempt + 1) * 2
-                    await DB.log_event("warning", "odos_rate_limited", f"Assemble attempt {attempt+1}/3, waiting {wait}s")
-                    await asyncio.sleep(wait)
-                    continue
-                raise
-        raise RuntimeError("Odos assemble rate limited after 3 retries")
+        return await self._odos_post(url, payload)
 
     # ── Jupiter (Solana) ─────────────────────────────────────────────
 
@@ -201,7 +205,7 @@ class Executor:
     async def _execute_base_buy(
         self, trade_id: str, token_address: str, symbol: str, amount_usd: float
     ):
-        """Execute a live buy on Base via Odos."""
+        """Execute a live buy on Base via Odos V3."""
         if self.w3 is None:
             raise RuntimeError("web3 is required for live Base trading")
 
@@ -326,7 +330,7 @@ class Executor:
     async def _execute_base_sell(
         self, trade_id: str, token_address: str, symbol: str, amount_token: float
     ):
-        """Execute a live sell on Base via Odos."""
+        """Execute a live sell on Base via Odos V3."""
         if self.w3 is None:
             raise RuntimeError("web3 is required for live Base trading")
 

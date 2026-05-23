@@ -41,6 +41,7 @@ class Settings(BaseSettings):
 
     # Optional APIs
     wsic_api_key: Optional[SecretStr] = None
+    odos_api_key: Optional[SecretStr] = Field(None, description="Odos API key for V3 enterprise endpoints")
 
     # CoinGecko
     coingecko_api_key: Optional[SecretStr] = None
