@@ -5,7 +5,7 @@ import httpx
 from typing import Optional, Dict, Any
 
 JUPITER_API = "https://api.jup.ag"
-JUPITER_V6 = "https://quote-api.jup.ag/v6"
+JUPITER_V6 = "https://api.jup.ag/v6"
 
 
 class JupiterClient:
