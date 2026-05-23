@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     solana_wallet_address: Optional[str] = Field(None, description="Solana wallet address")
     solana_rpc: str = "https://api.mainnet-beta.solana.com"
 
+    # Solana Price/Data APIs
+    birdeye_api_key: Optional[SecretStr] = Field(None, description="Birdeye API key for real-time Solana token prices")
+    helius_api_key: Optional[SecretStr] = Field(None, description="Helius API key for Solana RPC")
+    jupiter_api_key: Optional[SecretStr] = Field(None, description="Jupiter API key for priority quotes")
+
     # Optional: Turso (cloud SQLite)
     turso_database_url: Optional[str] = Field(None, description="Turso database URL (e.g., libsql://your-db.turso.io)")
     turso_auth_token: Optional[SecretStr] = Field(None, description="Turso auth token")
@@ -61,7 +66,7 @@ class Settings(BaseSettings):
     default_trade_size_usd: float = 5.0
     max_slippage: float = 0.02
     scan_interval_seconds: int = 300
-    chains_to_scan: str = Field(default="base,solana", description="Comma-separated chains to scan")
+    chains_to_scan: str = Field(default="solana", description="Comma-separated chains to scan")
 
     # Risk
     max_daily_loss_usd: float = 50.0
@@ -73,6 +78,9 @@ class Settings(BaseSettings):
     pumpfun_min_trade_usd: float = 1.0
     pumpfun_max_trade_usd: float = 10.0
     pumpfun_scan_interval_seconds: int = 60
+    pumpfun_profit_target_1: float = 0.25  # 25% profit = sell 60%
+    pumpfun_profit_target_2: float = 0.50  # 50% profit = sell 80%
+    pumpfun_stop_loss: float = 0.15  # -15% stop loss
 
     # Helius
     helius_api_key: Optional[SecretStr] = Field(None, description="Helius API key for Solana RPC")
