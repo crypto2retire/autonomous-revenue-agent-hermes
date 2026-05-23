@@ -17,6 +17,7 @@ from database import DB
 from models import TradeStatus
 from jupiter_client import get_jupiter
 from solana_client import SolanaClient
+from solana_price_client import get_solana_price_client
 
 settings = get_settings()
 
@@ -59,6 +60,8 @@ class Executor:
         await self.http.aclose()
         await self.jupiter.close()
         await self.solana.close()
+        price_client = await get_solana_price_client()
+        await price_client.close()
 
     # ── Odos V3 (Base) ───────────────────────────────────────────────
 
@@ -253,21 +256,12 @@ class Executor:
         if not settings.solana_wallet_address:
             raise RuntimeError("SOLANA_WALLET_ADDRESS not set")
 
-        # Fetch real SOL price from Jupiter price API with fallback to CoinGecko
-        sol_price = await self.jupiter.get_price(WSOL, vs_token="USDC")
-        if sol_price is None or sol_price <= 0:
-            # Fallback: try CoinGecko for SOL price
-            try:
-                async with httpx.AsyncClient(timeout=10.0) as http:
-                    resp = await http.get("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd")
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        sol_price = float(data.get("solana", {}).get("usd", 0))
-            except Exception:
-                sol_price = 0
+        # Fetch real SOL price using multi-source client with fallback chain
+        price_client = await get_solana_price_client()
+        sol_price = await price_client.get_price(WSOL, vs_token="USDC")
         
         if sol_price is None or sol_price <= 0:
-            raise RuntimeError("Could not fetch SOL price from Jupiter or CoinGecko for trade sizing")
+            raise RuntimeError("Could not fetch SOL price from any source (Jupiter, DexScreener, CoinGecko) for trade sizing")
 
         amount_lamports = int((amount_usd / sol_price) * 1e9)
 
@@ -288,6 +282,7 @@ class Executor:
                     f"Fund wallet {settings.solana_wallet_address} with more SOL."
                 )
 
+        # Get Jupiter quote for the swap
         quote = await self.get_jupiter_quote(WSOL, token_address, amount_lamports)
         swap_tx_data = await self.get_jupiter_swap_tx(quote, settings.solana_wallet_address)
 
