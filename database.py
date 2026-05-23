@@ -15,7 +15,18 @@ settings = get_settings()
 
 # Handle both PostgreSQL and SQLite async URLs
 database_url = settings.database_url.get_secret_value()
-if database_url.startswith("sqlite:///"):
+if database_url.startswith("sqlite+aiolibsql://"):
+    # Turso cloud SQLite (async)
+    from sqlalchemy.pool import AsyncAdaptedQueuePool
+    connect_args = {}
+    if settings.turso_auth_token:
+        connect_args["auth_token"] = settings.turso_auth_token.get_secret_value()
+    engine = create_async_engine(
+        database_url,
+        poolclass=AsyncAdaptedQueuePool,
+        connect_args=connect_args,
+    )
+elif database_url.startswith("sqlite:///"):
     # Convert to async SQLite URL
     database_url = database_url.replace("sqlite:///", "sqlite+aiosqlite:///")
     engine = create_async_engine(

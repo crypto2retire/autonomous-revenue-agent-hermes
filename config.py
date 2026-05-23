@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     solana_wallet_address: Optional[str] = Field(None, description="Solana wallet address")
     solana_rpc: str = "https://api.mainnet-beta.solana.com"
 
+    # Optional: Turso (cloud SQLite)
+    turso_database_url: Optional[str] = Field(None, description="Turso database URL (e.g., libsql://your-db.turso.io)")
+    turso_auth_token: Optional[SecretStr] = Field(None, description="Turso auth token")
+
     # Database
     database_url: SecretStr = Field(default=SecretStr("sqlite:///app.db"), description="Database connection string (PostgreSQL or SQLite)")
 

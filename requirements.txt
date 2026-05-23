@@ -4,6 +4,7 @@ httpx
 sqlalchemy[asyncio]
 asyncpg
 aiosqlite
+sqlalchemy-libsql
 pydantic
 pydantic-settings
 python-dotenv
