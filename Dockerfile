@@ -3,7 +3,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Ensure data directory exists for persistent SQLite volume
-RUN mkdir -p /app/data
+RUN mkdir -p /data
 
 # Install dependencies
 COPY requirements.txt .
