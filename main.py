@@ -48,6 +48,16 @@ async def run_pumpfun_scanner():
         await pf.close()
 
 
+async def run_backup():
+    """Backup DB to persistent volume every 5 minutes."""
+    while True:
+        await asyncio.sleep(300)  # 5 minutes
+        try:
+            await DB.backup()
+        except Exception as e:
+            print(f"Backup error: {e}")
+
+
 async def run_server():
     """FastAPI dashboard server."""
     config = uvicorn.Config(
@@ -66,11 +76,12 @@ async def main():
     await DB.init()
     await DB.log_event("info", "agent_started", "Crypto trading agent starting up")
 
-    # Run scanner, executor, pump.fun scanner, and server concurrently
+    # Run scanner, executor, pump.fun scanner, backup, and server concurrently
     await asyncio.gather(
         run_scanner(),
         run_executor(),
         run_pumpfun_scanner(),
+        run_backup(),
         run_server(),
     )
 

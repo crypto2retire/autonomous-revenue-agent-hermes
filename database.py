@@ -1,5 +1,8 @@
 """Async database engine and session management."""
 
+import os
+import shutil
+import asyncio
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy import select, desc, func, and_, update
 from typing import Optional, List, Dict, Any
@@ -12,6 +15,25 @@ from models import (
 )
 
 settings = get_settings()
+
+# Backup/restore for local SQLite persistence across deploys
+DB_PATH = "/app/agent.db"
+BACKUP_PATH = "/data/agent.db"
+
+def restore_db():
+    """Restore DB from backup volume on startup if backup exists."""
+    if os.path.exists(BACKUP_PATH) and not os.path.exists(DB_PATH):
+        shutil.copy2(BACKUP_PATH, DB_PATH)
+        print(f"Restored DB from {BACKUP_PATH} to {DB_PATH}")
+
+def backup_db():
+    """Copy DB to backup volume."""
+    if os.path.exists(DB_PATH):
+        shutil.copy2(DB_PATH, BACKUP_PATH)
+        print(f"Backed up DB to {BACKUP_PATH}")
+
+# Restore on module load (before engine creation)
+restore_db()
 
 # Handle both PostgreSQL and SQLite async URLs
 database_url = settings.database_url.get_secret_value()
@@ -57,6 +79,11 @@ class DB:
         """Create all tables."""
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+
+    @staticmethod
+    async def backup():
+        """Backup DB to persistent volume."""
+        backup_db()
 
     @staticmethod
     async def get_session():
