@@ -16,6 +16,7 @@ from config import get_settings
 from database import DB
 from models import TradeStatus
 from jupiter_client import get_jupiter
+from solana_client import SolanaClient
 
 settings = get_settings()
 
@@ -38,11 +39,16 @@ class Executor:
         self.http = httpx.AsyncClient(timeout=60.0)
         self.w3 = Web3(Web3.HTTPProvider(BASE_RPC)) if Web3 is not None else None
         self.jupiter = get_jupiter()
+        self.solana = SolanaClient(
+            rpc_url=settings.solana_rpc,
+            private_key=settings.solana_wallet_private_key.get_secret_value() if settings.solana_wallet_private_key else None,
+        )
         self.running = False
 
     async def close(self):
         await self.http.aclose()
         await self.jupiter.close()
+        await self.solana.close()
 
     # ── Odos (Base) ──────────────────────────────────────────────────
 
@@ -195,29 +201,52 @@ class Executor:
         self, trade_id: str, token_address: str, symbol: str, amount_usd: float
     ):
         """Execute a live buy on Solana via Jupiter."""
-        # Convert USD to lamports (approximate: 1 SOL ~ $150)
-        # In production, fetch real SOL price
-        sol_price = 150.0
+        if not self.solana.is_loaded:
+            raise RuntimeError("Solana wallet not configured — set SOLANA_WALLET_PRIVATE_KEY and SOLANA_WALLET_ADDRESS")
+
+        if not settings.solana_wallet_address:
+            raise RuntimeError("SOLANA_WALLET_ADDRESS not set")
+
+        # Fetch real SOL price from Jupiter price API
+        sol_price = await self.jupiter.get_price(WSOL, vs_token="USDC")
+        if sol_price is None or sol_price <= 0:
+            raise RuntimeError("Could not fetch SOL price for trade sizing")
+
         amount_lamports = int((amount_usd / sol_price) * 1e9)
 
-        quote = await self.get_jupiter_quote(WSOL, token_address, amount_lamports)
-        swap_tx = await self.get_jupiter_swap_tx(quote, settings.solana_wallet_address)
+        # Check wallet has enough SOL (with 0.005 SOL buffer for fees)
+        balance = await self.solana.get_balance()
+        if balance < amount_lamports + 5_000_000:
+            raise RuntimeError(
+                f"Insufficient SOL balance: {balance / 1e9:.6f} SOL "
+                f"(need {amount_lamports / 1e9:.6f} + 0.005 fee)"
+            )
 
-        # In production, sign and send the transaction with solana-py
-        # For now, record the swap transaction data
-        tx_hash = swap_tx.get("swapTransaction", "")[:64] or f"SOL-{uuid.uuid4().hex[:16]}"
+        quote = await self.get_jupiter_quote(WSOL, token_address, amount_lamports)
+        swap_tx_data = await self.get_jupiter_swap_tx(quote, settings.solana_wallet_address)
+
+        swap_tx_b64 = swap_tx_data.get("swapTransaction")
+        if not swap_tx_b64:
+            raise RuntimeError("Jupiter did not return swap transaction")
+
+        # Sign and send
+        signed_tx = self.solana.sign_jupiter_swap(swap_tx_b64)
+        signature = await self.solana.send_transaction(signed_tx)
+
+        # Confirm
+        await self.solana.confirm_transaction(signature, timeout_sec=60)
 
         await DB.update_trade(
             trade_id=trade_id,
             status=TradeStatus.EXECUTED,
             executed_at=datetime.utcnow(),
-            tx_hash=tx_hash,
+            tx_hash=signature,
         )
         await DB.log_event(
             "info", "live_trade_executed",
             f"Live buy {symbol} (Solana) for ${amount_usd}",
             {"token_address": token_address, "symbol": symbol, "chain": "solana",
-             "trade_id": trade_id, "tx_hash": tx_hash},
+             "trade_id": trade_id, "tx_hash": signature},
         )
 
     async def execute_sell(
@@ -290,20 +319,32 @@ class Executor:
         self, trade_id: str, token_address: str, symbol: str, amount_token: float
     ):
         """Execute a live sell on Solana via Jupiter."""
+        if not self.solana.is_loaded:
+            raise RuntimeError("Solana wallet not configured")
+
+        if not settings.solana_wallet_address:
+            raise RuntimeError("SOLANA_WALLET_ADDRESS not set")
+
         # Convert token amount to raw amount (assuming 6 decimals)
         amount_raw = int(amount_token * 1e6)
 
         quote = await self.get_jupiter_quote(token_address, WSOL, amount_raw)
-        swap_tx = await self.get_jupiter_swap_tx(quote, settings.solana_wallet_address)
+        swap_tx_data = await self.get_jupiter_swap_tx(quote, settings.solana_wallet_address)
 
-        tx_hash = swap_tx.get("swapTransaction", "")[:64] or f"SOL-{uuid.uuid4().hex[:16]}"
+        swap_tx_b64 = swap_tx_data.get("swapTransaction")
+        if not swap_tx_b64:
+            raise RuntimeError("Jupiter did not return swap transaction")
+
+        signed_tx = self.solana.sign_jupiter_swap(swap_tx_b64)
+        signature = await self.solana.send_transaction(signed_tx)
+        await self.solana.confirm_transaction(signature, timeout_sec=60)
 
         await DB.update_trade(
             trade_id=trade_id,
             status=TradeStatus.CLOSED,
             closed_at=datetime.utcnow(),
             close_reason="signal",
-            tx_hash=tx_hash,
+            tx_hash=signature,
         )
 
     # ── Position Manager ─────────────────────────────────────────────

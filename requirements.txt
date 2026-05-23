@@ -8,3 +8,6 @@ pydantic
 pydantic-settings
 python-dotenv
 web3
+solana>=0.30.0
+solders
+base58
