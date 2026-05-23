@@ -101,7 +101,7 @@ class BaseScanClient:
 
     async def get_token_transfers(
         self,
-        address: str,
+        address: Optional[str] = None,
         contract_address: Optional[str] = None,
         start_block: int = 0,
         end_block: int = 99999999,
@@ -113,13 +113,14 @@ class BaseScanClient:
         params = {
             "module": "account",
             "action": "tokentx",
-            "address": address,
             "startblock": start_block,
             "endblock": end_block,
             "page": page,
             "offset": offset,
             "sort": sort,
         }
+        if address:
+            params["address"] = address
         if contract_address:
             params["contractaddress"] = contract_address
         data = await self._get(params)
@@ -304,6 +305,28 @@ class BaseScanClient:
             return int(str(result).replace(",", ""))
         except (TypeError, ValueError):
             return None
+
+    async def get_token_active_holder_count(self, contract_address: str, offset: int = 200) -> Optional[int]:
+        """Fallback holder momentum proxy: unique wallets in recent token transfers."""
+        transfers = await self.get_token_transfers(
+            address=None,
+            contract_address=contract_address,
+            page=1,
+            offset=offset,
+            sort="desc",
+        )
+        if not isinstance(transfers, list):
+            return None
+        zero = "0x0000000000000000000000000000000000000000"
+        holders = set()
+        for tx in transfers:
+            if not isinstance(tx, dict):
+                continue
+            for key in ("from", "to"):
+                wallet = str(tx.get(key) or "").lower()
+                if wallet and wallet != zero:
+                    holders.add(wallet)
+        return len(holders) if holders else None
 
     async def get_token_holder_list(
         self,

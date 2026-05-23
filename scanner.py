@@ -328,11 +328,21 @@ class Scanner:
         return {}
 
     async def get_basescan_token_holder_count(self, token_address: str) -> Optional[int]:
-        """Get total token holder count from BaseScan when available."""
+        """Get total holder count, falling back to recent active holder count if needed."""
         try:
-            return await self.basescan.get_token_holder_count(token_address)
+            holder_count = await self.basescan.get_token_holder_count(token_address)
+            if holder_count is not None:
+                return holder_count
         except Exception as e:
             await DB.log_event("warning", "basescan_holder_count_failed", str(e), {"token_address": token_address})
+
+        try:
+            active_count = await self.basescan.get_token_active_holder_count(token_address)
+            if active_count is not None:
+                await DB.log_event("info", "holder_count_active_fallback", f"Using recent active holder count proxy: {active_count}", {"token_address": token_address})
+            return active_count
+        except Exception as e:
+            await DB.log_event("warning", "basescan_active_holder_count_failed", str(e), {"token_address": token_address})
             return None
 
     async def get_basescan_token_holders(self, token_address: str, top_n: int = 10) -> List[Dict[str, Any]]:
