@@ -5,6 +5,9 @@ from fastapi.responses import HTMLResponse
 from typing import Optional
 
 from database import DB
+from config import get_settings
+
+settings = get_settings()
 
 app = FastAPI(title="Crypto Trading Agent")
 
@@ -231,9 +234,18 @@ async def set_setting_api(key: str, value: str, value_type: str = "string"):
 
 @app.get("/api/trading/status")
 async def get_trading_status():
-    """Get current live trading status."""
-    is_live = await DB.get_setting("live_trading_enabled", False)
-    return {"live_trading_enabled": is_live}
+    """Get current trading status. Live is only effective when env AGENT_MODE=live and dashboard switch is enabled."""
+    live_requested = await DB.get_setting("live_trading_enabled", False)
+    effective_live = bool(live_requested and settings.is_live)
+    return {
+        "live_trading_enabled": effective_live,
+        "live_requested": bool(live_requested),
+        "agent_mode": settings.agent_mode,
+        "effective_mode": "live" if effective_live else "paper",
+        "paper_trading_enabled": not effective_live,
+        "max_positions": settings.max_positions,
+        "trade_size_usd": settings.min_trade_size_usd,
+    }
 
 
 @app.post("/api/trading/toggle")
@@ -1006,12 +1018,13 @@ async def dashboard():
             const statusRes = await fetch('/api/trading/status');
             const statusData = await statusRes.json();
             const isLive = statusData.live_trading_enabled;
+            const effectiveMode = statusData.effective_mode || (isLive ? 'live' : 'paper');
             
-            document.getElementById('trading-status').textContent = isLive ? 'LIVE' : 'PAPER';
+            document.getElementById('trading-status').textContent = effectiveMode.toUpperCase();
             document.getElementById('trading-status').style.color = isLive ? '#f87171' : '#00d4aa';
             
             document.getElementById('trading-indicator').style.background = isLive ? '#f87171' : '#00d4aa';
-            document.getElementById('trading-text').textContent = isLive ? 'Live Trading Enabled' : 'Paper Trading Only';
+            document.getElementById('trading-text').textContent = isLive ? 'Live Trading Enabled' : `Paper Trading Active (AGENT_MODE=${statusData.agent_mode || 'paper'})`;
             document.getElementById('trading-text').style.color = isLive ? '#f87171' : '#00d4aa';
             
             // Load all settings

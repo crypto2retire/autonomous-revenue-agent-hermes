@@ -491,6 +491,8 @@ class DB:
         """Record wallet snapshot."""
         async with async_session() as session:
             snapshot = WalletSnapshot(
+                address=settings.base_wallet_address,
+                chain="base",
                 total_usd=total_balance_usd,
                 eth_balance=eth_balance,
                 token_balances=str(token_balances) if token_balances else None,

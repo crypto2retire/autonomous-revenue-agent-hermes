@@ -7,7 +7,10 @@ from decimal import Decimal
 from typing import Optional
 
 import httpx
-from web3 import Web3
+try:
+    from web3 import Web3
+except ModuleNotFoundError:  # Paper mode does not need web3 installed locally.
+    Web3 = None
 
 from config import get_settings
 from database import DB
@@ -33,7 +36,7 @@ class Executor:
 
     def __init__(self):
         self.http = httpx.AsyncClient(timeout=60.0)
-        self.w3 = Web3(Web3.HTTPProvider(BASE_RPC))
+        self.w3 = Web3(Web3.HTTPProvider(BASE_RPC)) if Web3 is not None else None
         self.jupiter = get_jupiter()
         self.running = False
 
@@ -160,6 +163,9 @@ class Executor:
         self, trade_id: str, token_address: str, symbol: str, amount_usd: float
     ):
         """Execute a live buy on Base via Odos."""
+        if self.w3 is None:
+            raise RuntimeError("web3 is required for live Base trading")
+
         amount_wei = str(int(amount_usd * 1e18))
         quote = await self.get_odos_quote(WETH, token_address, amount_wei, settings.base_wallet_address)
         path_id = quote["pathId"]
@@ -169,7 +175,8 @@ class Executor:
 
         private_key = settings.base_wallet_private_key.get_secret_value()
         signed = self.w3.eth.account.sign_transaction(tx, private_key)
-        tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
+        raw_tx = getattr(signed, "raw_transaction", None) or getattr(signed, "rawTransaction")
+        tx_hash = self.w3.eth.send_raw_transaction(raw_tx)
 
         await DB.update_trade(
             trade_id=trade_id,
@@ -258,6 +265,9 @@ class Executor:
         self, trade_id: str, token_address: str, symbol: str, amount_token: float
     ):
         """Execute a live sell on Base via Odos."""
+        if self.w3 is None:
+            raise RuntimeError("web3 is required for live Base trading")
+
         amount_wei = str(int(amount_token * 1e18))
         quote = await self.get_odos_quote(token_address, WETH, amount_wei, settings.base_wallet_address)
         assembled = await self.assemble_odos_tx(quote["pathId"], settings.base_wallet_address)
@@ -265,7 +275,8 @@ class Executor:
 
         private_key = settings.base_wallet_private_key.get_secret_value()
         signed = self.w3.eth.account.sign_transaction(tx, private_key)
-        tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
+        raw_tx = getattr(signed, "raw_transaction", None) or getattr(signed, "rawTransaction")
+        tx_hash = self.w3.eth.send_raw_transaction(raw_tx)
 
         await DB.update_trade(
             trade_id=trade_id,

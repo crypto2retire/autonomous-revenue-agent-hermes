@@ -304,7 +304,12 @@ class BaseScanClient:
             "page": page,
             "offset": offset,
         })
-        return data.get("result", [])
+        result = data.get("result", [])
+        if isinstance(result, str):
+            return []
+        if isinstance(result, list):
+            return [r for r in result if isinstance(r, dict)]
+        return []
 
     # ── Cleanup ────────────────────────────────────────────────────────
 

@@ -12,6 +12,7 @@ from database import DB
 from coingecko_client import get_coingecko
 from dune_client import get_dune
 from basescan_client import get_basescan
+from executor import Executor
 
 settings = get_settings()
 
@@ -31,12 +32,14 @@ class Scanner:
         self.cg = get_coingecko()
         self.dune = get_dune()
         self.basescan = get_basescan()
+        self.executor = Executor()
 
     async def close(self):
         await self.http.aclose()
         await self.cg.close()
         await self.dune.close()
         await self.basescan.close()
+        await self.executor.close()
 
     # ── DexScreener API ──────────────────────────────────────────────
 
@@ -384,6 +387,11 @@ class Scanner:
         liquidity = token.get("liquidity", {}).get("usd", 0)
         market_cap = token.get("marketCap", 0)
         price_change = token.get("priceChange", {}).get("h24", 0)
+        rule_analysis = self._rule_based_signal(token)
+
+        # Do not spend LLM tokens on clearly untradable tokens; the rule engine explains why.
+        if rule_analysis["signal"] == "avoid" and rule_analysis["confidence"] >= 0.90:
+            return rule_analysis
 
         prompt = f"""Analyze this cryptocurrency token for short-term trading potential:
 
@@ -405,7 +413,7 @@ Respond ONLY with valid JSON."""
 
         try:
             resp = await self.http.post(
-                f"{DEEPSEEK_BASE}/chat/completions",
+                f"{settings.deepseek_base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {settings.deepseek_api_key.get_secret_value()}"},
                 json={
                     "model": settings.deepseek_model,
@@ -441,13 +449,25 @@ Respond ONLY with valid JSON."""
                 else:
                     raise
 
-            return {
+            llm_analysis = {
                 "signal": analysis.get("signal", "avoid").lower(),
                 "confidence": float(analysis.get("confidence", 0)),
                 "reasoning": analysis.get("reasoning", ""),
                 "risk_level": analysis.get("risk_level", "high"),
                 "tags": analysis.get("tags", ""),
             }
+
+            # Hybrid decision: deterministic guardrails can approve paper-mode opportunities,
+            # but they never override an LLM into live trading unless AGENT_MODE is paper.
+            if rule_analysis["signal"] == "buy" and llm_analysis["signal"] in {"buy", "hold", "avoid"}:
+                if settings.is_paper or llm_analysis["signal"] in {"buy", "hold"}:
+                    return {
+                        **rule_analysis,
+                        "confidence": max(rule_analysis["confidence"], min(llm_analysis["confidence"], 0.80)),
+                        "reasoning": f"{rule_analysis['reasoning']} | LLM: {llm_analysis['reasoning']}",
+                        "tags": ",".join(filter(None, [rule_analysis.get("tags", ""), llm_analysis.get("tags", "")]))[:250],
+                    }
+            return llm_analysis
         except Exception as e:
             await DB.log_event(
                 "error", "ai_analysis_failed", str(e),
@@ -550,6 +570,85 @@ Respond ONLY with valid JSON."""
 
         await DB.log_event("info", "scan_completed", f"Scanned {len(unique_tokens)} {chain} tokens")
 
+    def _rule_based_signal(self, token: Dict[str, Any]) -> Dict[str, Any]:
+        """Deterministic trading guardrails so the agent can act without blindly trusting an LLM."""
+        price = float(token.get("priceUsd") or 0)
+        volume = float(token.get("volume", {}).get("h24") or 0)
+        liquidity = float(token.get("liquidity", {}).get("usd") or 0)
+        price_change = float(token.get("priceChange", {}).get("h24") or 0)
+        market_cap = float(token.get("marketCap") or 0)
+
+        if price <= 0:
+            return {"signal": "avoid", "confidence": 0.98, "reasoning": "No reliable USD price available", "risk_level": "high", "tags": "no-price"}
+        if liquidity < 10000:
+            return {"signal": "avoid", "confidence": 0.96, "reasoning": f"Liquidity too thin (${liquidity:,.0f})", "risk_level": "high", "tags": "low-liquidity"}
+        if volume < 5000:
+            return {"signal": "avoid", "confidence": 0.92, "reasoning": f"24h volume too low (${volume:,.0f})", "risk_level": "high", "tags": "low-volume"}
+        if price_change < -20:
+            return {"signal": "avoid", "confidence": 0.90, "reasoning": f"Sharp 24h drawdown ({price_change:.1f}%)", "risk_level": "high", "tags": "drawdown"}
+        if price_change > 200:
+            return {"signal": "avoid", "confidence": 0.91, "reasoning": f"Extreme 24h pump ({price_change:.1f}%) likely unsafe for entry", "risk_level": "high", "tags": "extreme-pump"}
+
+        score = 0.0
+        tags = []
+        if liquidity >= 50000:
+            score += 0.22; tags.append("liquid")
+        if liquidity >= 250000:
+            score += 0.12; tags.append("deep-liquidity")
+        if volume >= 100000:
+            score += 0.22; tags.append("active-volume")
+        if volume >= liquidity * 0.5:
+            score += 0.16; tags.append("volume-momentum")
+        if 5 <= price_change <= 75:
+            score += 0.18; tags.append("momentum")
+        if market_cap and market_cap < 50_000_000:
+            score += 0.10; tags.append("small-cap")
+
+        if score >= 0.75:
+            return {"signal": "buy", "confidence": min(0.90, score), "reasoning": f"Rule engine buy: liquidity ${liquidity:,.0f}, volume ${volume:,.0f}, 24h change {price_change:.1f}%", "risk_level": "medium", "tags": ",".join(tags)}
+        if score >= 0.45:
+            return {"signal": "hold", "confidence": min(0.75, score), "reasoning": f"Watch candidate: liquidity ${liquidity:,.0f}, volume ${volume:,.0f}, 24h change {price_change:.1f}%", "risk_level": "medium", "tags": ",".join(tags)}
+        return {"signal": "avoid", "confidence": 0.75, "reasoning": f"Insufficient trade setup: liquidity ${liquidity:,.0f}, volume ${volume:,.0f}, 24h change {price_change:.1f}%", "risk_level": "high", "tags": ",".join(tags) or "weak-setup"}
+
+    async def _maybe_execute_trade(self, address: str, token: Dict[str, Any], analysis: Dict[str, Any], chain: str):
+        """Open one guarded trade for a strong buy signal. Paper mode is allowed by default; live requires env + DB enable."""
+        if analysis.get("signal") != "buy" or float(analysis.get("confidence") or 0) < 0.70:
+            return
+
+        open_trades = await DB.get_trades(status="executed", limit=500)
+        open_trades = [t for t in open_trades if getattr(t, "closed_at", None) is None]
+        if len(open_trades) >= settings.max_positions:
+            await DB.log_event("warning", "trade_skipped_max_positions", f"Max open positions reached ({settings.max_positions})")
+            return
+        if any(t.token_address == address and t.chain == chain for t in open_trades):
+            await DB.log_event("info", "trade_skipped_existing_position", f"Already holding {token.get('symbol', 'UNKNOWN')} ({chain})", {"token_address": address})
+            return
+
+        live_requested = bool(await DB.get_setting("live_trading_enabled", False))
+        effective_live = settings.is_live and live_requested
+        if settings.is_live and not live_requested:
+            await DB.log_event("warning", "trade_skipped_live_disabled", "AGENT_MODE is live but dashboard live trading is disabled")
+            return
+        if live_requested and not settings.is_live:
+            await DB.log_event("warning", "live_trading_env_guard", "Dashboard requested live trading, but AGENT_MODE is paper; executing paper trade only")
+
+        amount_usd = max(settings.min_trade_size_usd, min(settings.max_trade_size_usd, settings.min_trade_size_usd))
+        trade_id = await self.executor.execute_buy(
+            token_address=address,
+            symbol=token.get("symbol", "UNKNOWN"),
+            amount_usd=amount_usd,
+            signal=analysis.get("signal", "buy"),
+            confidence=float(analysis.get("confidence") or 0),
+            chain=chain,
+        )
+        if trade_id:
+            await DB.log_event(
+                "info",
+                "auto_trade_opened",
+                f"{'Live' if effective_live else 'Paper'} buy opened for {token.get('symbol', 'UNKNOWN')} ({chain}) at ${amount_usd}",
+                {"token_address": address, "trade_id": trade_id, "chain": chain, "mode": "live" if effective_live else "paper"},
+            )
+
     async def _process_token(self, token: Dict[str, Any], chain: str = "base"):
         """Process a single token: enrich, analyze, persist."""
         address = token.get("tokenAddress", "")
@@ -591,8 +690,8 @@ Respond ONLY with valid JSON."""
                 deployer_address = contract_info.get("contractCreator")
 
             holders = await self.get_basescan_token_holders(address, top_n=5)
-            if holders:
-                token["top_holders"] = holders
+            if holders and isinstance(holders, list):
+                token["top_holders"] = [h for h in holders if isinstance(h, dict)]
 
         # AI analysis
         analysis = await self.analyze_opportunity(token)
@@ -637,13 +736,14 @@ Respond ONLY with valid JSON."""
             if deployer_address:
                 await DB.update_deployer_stats(deployer_address)
 
-        # Log significant signals
+        # Log and execute significant signals
         if analysis["signal"] == "buy" and analysis["confidence"] > 0.7:
             await DB.log_event(
                 "info", "strong_buy_signal",
                 f"{token.get('symbol', 'UNKNOWN')} ({chain}): {analysis['reasoning']}",
                 {"token_address": address, "symbol": token.get("symbol", ""), "chain": chain, "confidence": analysis["confidence"], "price": token.get("priceUsd", 0)},
             )
+            await self._maybe_execute_trade(address, token, analysis, chain)
 
     async def run(self):
         """Continuous scan loop."""
