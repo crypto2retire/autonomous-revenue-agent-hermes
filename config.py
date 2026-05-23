@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     solana_rpc: str = "https://api.mainnet-beta.solana.com"
 
     # Database
-    database_url: SecretStr = Field(..., description="PostgreSQL connection string")
+    database_url: SecretStr = Field(default=SecretStr("sqlite:///app.db"), description="Database connection string (PostgreSQL or SQLite)")
 
     # BaseScan
     basescan_api_key: Optional[SecretStr] = None
