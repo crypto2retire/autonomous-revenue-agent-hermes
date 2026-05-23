@@ -81,7 +81,7 @@ class Executor:
                 return resp.json()
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429:
-                    wait = (attempt + 1) * 2
+                    wait = (attempt + 1) * 5  # Wait longer: 5s, 10s, 15s
                     await DB.log_event(
                         "warning", "odos_rate_limited",
                         f"Attempt {attempt + 1}/3, waiting {wait}s",
@@ -89,6 +89,15 @@ class Executor:
                     )
                     await asyncio.sleep(wait)
                     continue
+                elif e.response.status_code == 400:
+                    # Log the error response for debugging
+                    error_text = e.response.text
+                    await DB.log_event(
+                        "error", "odos_bad_request",
+                        f"Odos 400: {error_text[:200]}",
+                        {"url": url, "payload": str(payload)[:500]},
+                    )
+                    raise RuntimeError(f"Odos API bad request: {error_text[:200]}")
                 raise
         raise RuntimeError(f"Odos API rate limited after 3 retries: {url}")
 
@@ -244,21 +253,40 @@ class Executor:
         if not settings.solana_wallet_address:
             raise RuntimeError("SOLANA_WALLET_ADDRESS not set")
 
-        # Fetch real SOL price from Jupiter price API
+        # Fetch real SOL price from Jupiter price API with fallback to CoinGecko
         sol_price = await self.jupiter.get_price(WSOL, vs_token="USDC")
         if sol_price is None or sol_price <= 0:
-            raise RuntimeError("Could not fetch SOL price for trade sizing")
+            # Fallback: try CoinGecko for SOL price
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as http:
+                    resp = await http.get("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd")
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        sol_price = float(data.get("solana", {}).get("usd", 0))
+            except Exception:
+                sol_price = 0
+        
+        if sol_price is None or sol_price <= 0:
+            raise RuntimeError("Could not fetch SOL price from Jupiter or CoinGecko for trade sizing")
 
         amount_lamports = int((amount_usd / sol_price) * 1e9)
 
         # Check wallet has enough SOL (with 0.005 SOL buffer for fees)
         balance = await self.solana.get_balance()
         if balance < amount_lamports + 5_000_000:
-            raise RuntimeError(
-                f"Insufficient SOL balance: {balance / 1e9:.6f} SOL "
-                f"(need {amount_lamports / 1e9:.6f} + 0.005 fee). "
-                f"Fund wallet {settings.solana_wallet_address} with more SOL."
-            )
+            # Try to get exact fee estimate
+            try:
+                fee_estimate = await self.solana.get_fee_estimate()
+                required_lamports = amount_lamports + fee_estimate
+            except Exception:
+                required_lamports = amount_lamports + 5_000_000
+            
+            if balance < required_lamports:
+                raise RuntimeError(
+                    f"Insufficient SOL balance: {balance / 1e9:.6f} SOL "
+                    f"(need {(amount_lamports / 1e9):.6f} + {(required_lamports - amount_lamports) / 1e9:.6f} fee). "
+                    f"Fund wallet {settings.solana_wallet_address} with more SOL."
+                )
 
         quote = await self.get_jupiter_quote(WSOL, token_address, amount_lamports)
         swap_tx_data = await self.get_jupiter_swap_tx(quote, settings.solana_wallet_address)

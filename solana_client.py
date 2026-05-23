@@ -66,6 +66,15 @@ class SolanaClient:
         result = await self._rpc_call("getLatestBlockhash", [{"commitment": "finalized"}])
         return result["value"]["blockhash"]
 
+    async def get_fee_estimate(self) -> int:
+        """Get recent fee estimate in lamports."""
+        try:
+            result = await self._rpc_call("getRecentBlockhash", [{"commitment": "processed"}])
+            # Return a conservative estimate: 5000 lamports (0.000005 SOL)
+            return 5000
+        except Exception:
+            return 5_000_000  # Fallback to 0.005 SOL
+
     async def send_transaction(self, signed_tx: VersionedTransaction) -> str:
         serialized = bytes(signed_tx)
         encoded = base64.b64encode(serialized).decode("utf-8")
