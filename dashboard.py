@@ -1106,6 +1106,7 @@ async def dashboard():
 
         // Auto-refresh watchlist every 30s
         loadWatchlist();
+        loadSettings();
         setInterval(() => {
             if (document.getElementById('watchlist-panel').classList.contains('active')) {
                 loadWatchlist();
