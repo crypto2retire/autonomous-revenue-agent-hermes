@@ -327,6 +327,14 @@ class Scanner:
             await DB.log_event("error", "basescan_contract_failed", str(e), {"token_address": token_address})
         return {}
 
+    async def get_basescan_token_holder_count(self, token_address: str) -> Optional[int]:
+        """Get total token holder count from BaseScan when available."""
+        try:
+            return await self.basescan.get_token_holder_count(token_address)
+        except Exception as e:
+            await DB.log_event("warning", "basescan_holder_count_failed", str(e), {"token_address": token_address})
+            return None
+
     async def get_basescan_token_holders(self, token_address: str, top_n: int = 10) -> List[Dict[str, Any]]:
         """Get top token holders from BaseScan."""
         try:
@@ -607,6 +615,81 @@ Respond ONLY with valid JSON."""
             return {"signal": "hold", "confidence": min(0.75, score), "reasoning": f"Watch candidate: liquidity ${liquidity:,.0f}, volume ${volume:,.0f}, 24h change {price_change:.1f}%", "risk_level": "medium", "tags": ",".join(tags)}
         return {"signal": "avoid", "confidence": 0.75, "reasoning": f"Insufficient trade setup: liquidity ${liquidity:,.0f}, volume ${volume:,.0f}, 24h change {price_change:.1f}%", "risk_level": "high", "tags": ",".join(tags) or "weak-setup"}
 
+    async def _apply_holder_volume_trend_signal(
+        self, address: str, token: Dict[str, Any], analysis: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Promote tokens when holder count and 24h volume are rising across scans."""
+        current_volume = float(token.get("volume", {}).get("h24") or 0)
+        current_holders = token.get("holder_count")
+        try:
+            current_holders = int(current_holders) if current_holders is not None else None
+        except (TypeError, ValueError):
+            current_holders = None
+
+        history = await DB.get_price_history(address, hours=72, limit=10)
+        previous = next(
+            (h for h in reversed(history) if h.volume_24h is not None or h.holder_count is not None),
+            None,
+        )
+        if not previous:
+            analysis["reasoning"] = f"{analysis.get('reasoning', '')} | Monitoring holder count and volume trend; first snapshot captured.".strip()
+            analysis["tags"] = ",".join(filter(None, [analysis.get("tags", ""), "trend-baseline"]))[:250]
+            return analysis
+
+        previous_volume = float(previous.volume_24h or 0)
+        previous_holders = previous.holder_count
+        volume_rising = current_volume > 0 and previous_volume > 0 and current_volume > previous_volume
+        holder_rising = current_holders is not None and previous_holders is not None and current_holders > previous_holders
+
+        token["volume_trend"] = {
+            "current": current_volume,
+            "previous": previous_volume,
+            "rising": volume_rising,
+        }
+        token["holder_trend"] = {
+            "current": current_holders,
+            "previous": previous_holders,
+            "rising": holder_rising,
+        }
+
+        if holder_rising and volume_rising:
+            liquidity = float(token.get("liquidity", {}).get("usd") or 0)
+            price = float(token.get("priceUsd") or 0)
+            price_change = float(token.get("priceChange", {}).get("h24") or 0)
+            reason = (
+                f"Holder count and volume are both rising "
+                f"(holders {previous_holders}->{current_holders}, "
+                f"volume ${previous_volume:,.0f}->${current_volume:,.0f})"
+            )
+            if price > 0 and liquidity >= 10000 and current_volume >= 5000 and price_change > -20:
+                return {
+                    **analysis,
+                    "signal": "buy",
+                    "confidence": max(float(analysis.get("confidence") or 0), 0.84),
+                    "reasoning": f"{reason}; buy/accumulate signal. Prior analysis: {analysis.get('reasoning', '')}",
+                    "risk_level": analysis.get("risk_level", "medium"),
+                    "tags": ",".join(filter(None, [analysis.get("tags", ""), "holders-rising", "volume-rising", "trend-buy"]))[:250],
+                }
+            return {
+                **analysis,
+                "signal": "hold",
+                "confidence": max(float(analysis.get("confidence") or 0), 0.72),
+                "reasoning": f"{reason}; monitoring because liquidity/price safety filters are not fully met. Prior analysis: {analysis.get('reasoning', '')}",
+                "tags": ",".join(filter(None, [analysis.get("tags", ""), "holders-rising", "volume-rising", "trend-monitor"]))[:250],
+            }
+
+        if holder_rising or volume_rising:
+            rising = "holders" if holder_rising else "volume"
+            return {
+                **analysis,
+                "signal": "hold" if analysis.get("signal") == "avoid" else analysis.get("signal", "hold"),
+                "confidence": max(float(analysis.get("confidence") or 0), 0.68),
+                "reasoning": f"Monitoring: {rising} rising, waiting for both holders and volume to rise. Prior analysis: {analysis.get('reasoning', '')}",
+                "tags": ",".join(filter(None, [analysis.get("tags", ""), f"{rising}-rising", "trend-monitor"]))[:250],
+            }
+
+        return analysis
+
     async def _maybe_execute_trade(self, address: str, token: Dict[str, Any], analysis: Dict[str, Any], chain: str):
         """Open one guarded trade for a strong buy signal. Paper mode is allowed by default; live requires env + DB enable."""
         if analysis.get("signal") != "buy" or float(analysis.get("confidence") or 0) < 0.70:
@@ -686,17 +769,43 @@ Respond ONLY with valid JSON."""
                 token["contract_creation"] = contract_info
                 deployer_address = contract_info.get("contractCreator")
 
+            holder_count = await self.get_basescan_token_holder_count(address)
+            if holder_count is not None:
+                token["holder_count"] = holder_count
+
             holders = await self.get_basescan_token_holders(address, top_n=5)
             if holders and isinstance(holders, list):
                 token["top_holders"] = [h for h in holders if isinstance(h, dict)]
 
-        # AI analysis
+        # AI/rule analysis, then trend override: rising holders + rising volume => buy/monitor.
         analysis = await self.analyze_opportunity(token)
+        analysis = await self._apply_holder_volume_trend_signal(address, token, analysis)
 
         # Persist to watchlist with deployer tracking
         existing = await DB.get_coin(address)
         if existing:
-            await DB.update_coin_signal(address, analysis["signal"], analysis["confidence"])
+            analysis_data = {
+                "reasoning": analysis["reasoning"],
+                "risk_level": analysis["risk_level"],
+                "tags": analysis["tags"],
+                "source": token.get("source", "unknown"),
+                "chain": chain,
+                "basescan": token.get("basescan") if chain.lower() == "base" else None,
+                "contract_creation": token.get("contract_creation") if chain.lower() == "base" else None,
+                "top_holders": token.get("top_holders") if chain.lower() == "base" else None,
+                "holder_count": token.get("holder_count"),
+                "holder_trend": token.get("holder_trend"),
+                "volume_trend": token.get("volume_trend"),
+            }
+            await DB.update_coin_signal(address, analysis["signal"], analysis["confidence"], analysis_data)
+            await DB.update_coin_market_data(
+                token_address=address,
+                price_usd=token.get("priceUsd", 0),
+                volume_24h=token.get("volume", {}).get("h24"),
+                liquidity_usd=token.get("liquidity", {}).get("usd"),
+                market_cap=token.get("marketCap") or 0,
+                holder_count=token.get("holder_count"),
+            )
             await DB.record_price_history(
                 token_address=address,
                 symbol=token.get("symbol", "UNKNOWN"),
@@ -704,6 +813,7 @@ Respond ONLY with valid JSON."""
                 volume_24h=token.get("volume", {}).get("h24"),
                 liquidity_usd=token.get("liquidity", {}).get("usd"),
                 market_cap=token.get("marketCap") or 0,
+                holder_count=token.get("holder_count"),
                 signal=analysis["signal"],
                 confidence=analysis["confidence"],
             )
@@ -727,7 +837,29 @@ Respond ONLY with valid JSON."""
                     "basescan": token.get("basescan") if chain.lower() == "base" else None,
                     "contract_creation": token.get("contract_creation") if chain.lower() == "base" else None,
                     "top_holders": token.get("top_holders") if chain.lower() == "base" else None,
+                    "holder_count": token.get("holder_count"),
+                    "holder_trend": token.get("holder_trend"),
+                    "volume_trend": token.get("volume_trend"),
                 },
+            )
+            await DB.update_coin_market_data(
+                token_address=address,
+                price_usd=token.get("priceUsd", 0),
+                volume_24h=token.get("volume", {}).get("h24"),
+                liquidity_usd=token.get("liquidity", {}).get("usd"),
+                market_cap=token.get("marketCap") or 0,
+                holder_count=token.get("holder_count"),
+            )
+            await DB.record_price_history(
+                token_address=address,
+                symbol=token.get("symbol", "UNKNOWN"),
+                price_usd=token.get("priceUsd", 0),
+                volume_24h=token.get("volume", {}).get("h24"),
+                liquidity_usd=token.get("liquidity", {}).get("usd"),
+                market_cap=token.get("marketCap") or 0,
+                holder_count=token.get("holder_count"),
+                signal=analysis["signal"],
+                confidence=analysis["confidence"],
             )
             
             if deployer_address:

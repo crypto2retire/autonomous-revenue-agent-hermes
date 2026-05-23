@@ -290,6 +290,21 @@ class BaseScanClient:
             return result
         return {}
 
+    async def get_token_holder_count(self, contract_address: str) -> Optional[int]:
+        """Get total holder count for an ERC-20 token when BaseScan exposes it."""
+        data = await self._get({
+            "module": "token",
+            "action": "tokenholdercount",
+            "contractaddress": contract_address,
+        })
+        result = data.get("result")
+        if isinstance(result, dict):
+            result = result.get("holderCount") or result.get("holders") or result.get("count")
+        try:
+            return int(str(result).replace(",", ""))
+        except (TypeError, ValueError):
+            return None
+
     async def get_token_holder_list(
         self,
         contract_address: str,

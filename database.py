@@ -250,9 +250,9 @@ class DB:
 
     @staticmethod
     async def update_coin_signal(
-        token_address: str, signal: str, ai_score: float = None
+        token_address: str, signal: str, ai_score: float = None, extra_data: dict = None
     ):
-        """Update coin signal and score."""
+        """Update coin signal, score, and latest analysis details."""
         async with async_session() as session:
             result = await session.execute(
                 select(CoinWatch).where(CoinWatch.token_address == token_address)
@@ -263,6 +263,38 @@ class DB:
                 coin.scan_count = (coin.scan_count or 0) + 1
                 if ai_score is not None:
                     coin.confidence = ai_score
+                if extra_data is not None:
+                    coin.extra_data = extra_data
+                    coin.ai_analysis = str(extra_data)
+                coin.last_seen_at = datetime.utcnow()
+                await session.commit()
+
+    @staticmethod
+    async def update_coin_market_data(
+        token_address: str,
+        price_usd: float = None,
+        volume_24h: float = None,
+        liquidity_usd: float = None,
+        market_cap: float = None,
+        holder_count: int = None,
+    ):
+        """Update latest market/holder data on the watchlist row."""
+        async with async_session() as session:
+            result = await session.execute(
+                select(CoinWatch).where(CoinWatch.token_address == token_address)
+            )
+            coin = result.scalar_one_or_none()
+            if coin:
+                if price_usd is not None:
+                    coin.last_price_usd = price_usd
+                if volume_24h is not None:
+                    coin.volume_24h = volume_24h
+                if liquidity_usd is not None:
+                    coin.liquidity_usd = liquidity_usd
+                if market_cap is not None:
+                    coin.market_cap = market_cap
+                if holder_count is not None:
+                    coin.holder_count = holder_count
                 coin.last_seen_at = datetime.utcnow()
                 await session.commit()
 
