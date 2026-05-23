@@ -6,7 +6,7 @@ primary_region = 'ord'
 [env]
   PORT = "8000"
   PYTHONUNBUFFERED = "1"
-  AGENT_MODE = "paper"
+  AGENT_MODE = "live"
   DATABASE_URL = "sqlite+aiolibsql:///agent.db"
 
 [http_service]
