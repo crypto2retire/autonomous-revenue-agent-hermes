@@ -9,6 +9,8 @@ from config import get_settings
 settings = get_settings()
 
 BASESCAN_BASE = "https://api.basescan.org/api"
+ETHERSCAN_V2_BASE = "https://api.etherscan.io/v2/api"
+BASE_CHAIN_ID = "8453"
 
 
 class BaseScanClient:
@@ -30,6 +32,16 @@ class BaseScanClient:
         if self.api_key:
             req_params["apikey"] = self.api_key.get_secret_value()
         resp = await client.get(BASESCAN_BASE, params=req_params)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def _get_v2(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Make an Etherscan V2 request for Base chain endpoints."""
+        client = await self._get_client()
+        req_params = {"chainid": BASE_CHAIN_ID, **dict(params)}
+        if self.api_key:
+            req_params["apikey"] = self.api_key.get_secret_value()
+        resp = await client.get(ETHERSCAN_V2_BASE, params=req_params)
         resp.raise_for_status()
         return resp.json()
 
@@ -292,13 +304,24 @@ class BaseScanClient:
         return {}
 
     async def get_token_holder_count(self, contract_address: str) -> Optional[int]:
-        """Get total holder count for an ERC-20 token when BaseScan exposes it."""
-        data = await self._get({
+        """Get total holder count for an ERC-20 token using Etherscan V2/Base fallback."""
+        params = {
             "module": "token",
             "action": "tokenholdercount",
             "contractaddress": contract_address,
-        })
-        result = data.get("result")
+        }
+        result = None
+        try:
+            data = await self._get_v2(params)
+            if str(data.get("status")) == "1":
+                result = data.get("result")
+        except Exception:
+            result = None
+
+        if result is None:
+            data = await self._get(params)
+            result = data.get("result")
+
         if isinstance(result, dict):
             result = result.get("holderCount") or result.get("holders") or result.get("count")
         try:
