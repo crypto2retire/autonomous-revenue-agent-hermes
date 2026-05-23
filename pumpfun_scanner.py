@@ -76,19 +76,23 @@ class PumpFunScanner:
 
     # ── DexScreener: Discover pump.fun tokens ─────────────────────────
 
-    async def get_latest_solana_pairs(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """Get latest Solana pairs from DexScreener."""
+    async def get_latest_pumpswap_pairs(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get latest PumpSwap pairs from DexScreener (pump.fun's DEX)."""
         url = f"{DEXSCREENER_BASE}/latest/dex/search"
         try:
-            resp = await self.http.get(url, params={"q": "solana"})
+            resp = await self.http.get(url, params={"q": "pumpswap"})
             resp.raise_for_status()
             data = resp.json()
             pairs = data.get("pairs", [])
-            # Filter to Solana only
-            pairs = [p for p in pairs if p.get("chainId", "").lower() == "solana"]
+            # Filter to Solana only and pump-related DEXes
+            pairs = [
+                p for p in pairs
+                if p.get("chainId", "").lower() == "solana"
+                and "pump" in str(p.get("dexId", "")).lower()
+            ]
             return pairs[:limit]
         except Exception as e:
-            await DB.log_event("error", "dexscreener_sol_latest_failed", str(e))
+            await DB.log_event("error", "dexscreener_pumpswap_failed", str(e))
             return []
 
     async def get_solana_token_pairs(self, token_address: str) -> List[Dict[str, Any]]:
@@ -113,9 +117,9 @@ class PumpFunScanner:
     # ── Launch detection ──────────────────────────────────────────────
 
     async def detect_new_launches(self, limit: int = 30) -> List[Dict[str, Any]]:
-        """Detect new pump.fun token launches via DexScreener + Helius verification."""
-        # Get latest Solana pairs
-        pairs = await self.get_latest_solana_pairs(limit=limit)
+        """Detect new pump.fun token launches via DexScreener PumpSwap pairs."""
+        # Get latest PumpSwap pairs
+        pairs = await self.get_latest_pumpswap_pairs(limit=limit)
         launches = []
 
         for pair in pairs:
@@ -128,7 +132,7 @@ class PumpFunScanner:
             if token_address in self._seen_mints:
                 continue
 
-            # Quick filter: micro-cap tokens are more likely pump.fun
+            # Quick filter: micro-cap tokens are more likely fresh launches
             mcap = float(pair.get("marketCap", 0) or 0)
             liquidity = float(pair.get("liquidity", {}).get("usd", 0) or 0)
             volume = float(pair.get("volume", {}).get("h24", 0) or 0)
@@ -137,11 +141,6 @@ class PumpFunScanner:
             if mcap > 5_000_000:
                 continue
             if liquidity < 1000:
-                continue
-
-            # Verify it's a pump.fun token via Helius
-            is_pf = await self.is_pumpfun_token(token_address)
-            if not is_pf:
                 continue
 
             self._seen_mints.add(token_address)
