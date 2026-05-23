@@ -256,7 +256,8 @@ class Executor:
         if balance < amount_lamports + 5_000_000:
             raise RuntimeError(
                 f"Insufficient SOL balance: {balance / 1e9:.6f} SOL "
-                f"(need {amount_lamports / 1e9:.6f} + 0.005 fee)"
+                f"(need {amount_lamports / 1e9:.6f} + 0.005 fee). "
+                f"Fund wallet {settings.solana_wallet_address} with more SOL."
             )
 
         quote = await self.get_jupiter_quote(WSOL, token_address, amount_lamports)
