@@ -1,7 +1,7 @@
 """Pump.fun launch scanner — watches Solana token launches for short-term momentum plays.
 
 Strategy: Get in early on pump.fun launches, target 25-50% gains, leave a moon bag.
-Uses Helius RPC for real-time mint detection and DexScreener for pricing.
+Uses DexScreener for price data and Helius RPC for on-chain verification.
 """
 
 import asyncio
@@ -38,7 +38,7 @@ class PumpFunScanner:
         await self.http.aclose()
         await self.scanner.close()
 
-    # ── Helius RPC: Recent pump.fun signatures ────────────────────────
+    # ── Helius RPC ────────────────────────────────────────────────────
 
     async def _helius_rpc(self, method: str, params: list) -> dict:
         """Call Helius RPC with the user's API key."""
@@ -52,58 +52,44 @@ class PumpFunScanner:
             raise RuntimeError(f"Helius RPC error: {data['error']}")
         return data.get("result", {})
 
-    async def get_recent_pumpfun_signatures(self, limit: int = 50) -> List[str]:
-        """Fetch recent signatures for the pump.fun program."""
+    async def is_pumpfun_token(self, token_address: str) -> bool:
+        """Check if a token was created by the pump.fun program."""
         try:
+            # Use getAsset to check creator / ownership
             result = await self._helius_rpc(
-                "getSignaturesForAddress",
-                [PUMPFUN_PROGRAM, {"limit": limit}],
+                "getAsset",
+                [token_address],
             )
-            sigs = result if isinstance(result, list) else []
-            return [s["signature"] for s in sigs if isinstance(s, dict)]
+            # Check if the token's authority or creator matches pump.fun
+            ownership = result.get("ownership", {})
+            owner = ownership.get("owner", "")
+            if owner == PUMPFUN_PROGRAM:
+                return True
+            # Also check creators list
+            creators = result.get("creators", [])
+            for creator in creators:
+                if creator.get("address") == PUMPFUN_PROGRAM:
+                    return True
+            return False
+        except Exception:
+            return False
+
+    # ── DexScreener: Discover pump.fun tokens ─────────────────────────
+
+    async def get_latest_solana_pairs(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get latest Solana pairs from DexScreener."""
+        url = f"{DEXSCREENER_BASE}/latest/dex/search"
+        try:
+            resp = await self.http.get(url, params={"q": "solana"})
+            resp.raise_for_status()
+            data = resp.json()
+            pairs = data.get("pairs", [])
+            # Filter to Solana only
+            pairs = [p for p in pairs if p.get("chainId", "").lower() == "solana"]
+            return pairs[:limit]
         except Exception as e:
-            await DB.log_event("error", "pumpfun_signatures_failed", str(e))
+            await DB.log_event("error", "dexscreener_sol_latest_failed", str(e))
             return []
-
-    async def get_transaction(self, signature: str) -> Optional[Dict[str, Any]]:
-        """Fetch full transaction details to extract mint address."""
-        try:
-            result = await self._helius_rpc(
-                "getTransaction",
-                [signature, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}],
-            )
-            return result
-        except Exception as e:
-            await DB.log_event("error", "pumpfun_tx_failed", str(e), {"signature": signature})
-            return None
-
-    def _extract_mint_from_tx(self, tx: dict) -> Optional[str]:
-        """Extract the token mint from a pump.fun create transaction."""
-        meta = tx.get("meta", {}) if tx else {}
-        pre_balances = meta.get("preTokenBalances", [])
-        post_balances = meta.get("postTokenBalances", [])
-
-        # New mint appears in post but not pre
-        pre_mints = {b.get("mint", "") for b in pre_balances if isinstance(b, dict)}
-        post_mints = {b.get("mint", "") for b in post_balances if isinstance(b, dict)}
-        new_mints = post_mints - pre_mints
-
-        for mint in new_mints:
-            if mint and mint != "So11111111111111111111111111111111111111112":
-                return mint
-
-        # Fallback: look in logMessages for "Create" or "InitializeMint"
-        logs = meta.get("logMessages", [])
-        for log in logs:
-            if "mint" in log.lower():
-                parts = log.split()
-                for p in parts:
-                    if len(p) == 43 or len(p) == 44:  # base58 Solana address length
-                        if p.startswith("A") or p.startswith("B") or p.startswith("C"):
-                            return p
-        return None
-
-    # ── DexScreener: Price data for Solana tokens ─────────────────────
 
     async def get_solana_token_pairs(self, token_address: str) -> List[Dict[str, Any]]:
         """Get pair data for a Solana token from DexScreener."""
@@ -126,46 +112,51 @@ class PumpFunScanner:
 
     # ── Launch detection ──────────────────────────────────────────────
 
-    async def detect_new_launches(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """Detect new pump.fun token launches."""
-        signatures = await self.get_recent_pumpfun_signatures(limit=limit)
+    async def detect_new_launches(self, limit: int = 30) -> List[Dict[str, Any]]:
+        """Detect new pump.fun token launches via DexScreener + Helius verification."""
+        # Get latest Solana pairs
+        pairs = await self.get_latest_solana_pairs(limit=limit)
         launches = []
 
-        for sig in signatures:
-            if sig in self._seen_mints:
+        for pair in pairs:
+            base_token = pair.get("baseToken", {})
+            token_address = base_token.get("address", "")
+            if not token_address:
                 continue
 
-            tx = await self.get_transaction(sig)
-            if not tx:
+            # Skip if already seen
+            if token_address in self._seen_mints:
                 continue
 
-            mint = self._extract_mint_from_tx(tx)
-            if not mint or mint in self._seen_mints:
+            # Quick filter: micro-cap tokens are more likely pump.fun
+            mcap = float(pair.get("marketCap", 0) or 0)
+            liquidity = float(pair.get("liquidity", {}).get("usd", 0) or 0)
+            volume = float(pair.get("volume", {}).get("h24", 0) or 0)
+
+            # Skip if too large (not a fresh launch)
+            if mcap > 5_000_000:
+                continue
+            if liquidity < 1000:
                 continue
 
-            self._seen_mints.add(mint)
-            self._seen_mints.add(sig)
-
-            # Get price data
-            pairs = await self.get_solana_token_pairs(mint)
-            if not pairs:
+            # Verify it's a pump.fun token via Helius
+            is_pf = await self.is_pumpfun_token(token_address)
+            if not is_pf:
                 continue
 
-            best = max(pairs, key=lambda p: float(p.get("liquidity", {}).get("usd", 0) or 0))
-            base = best.get("baseToken", {})
+            self._seen_mints.add(token_address)
 
             launch = {
-                "tokenAddress": mint,
-                "symbol": base.get("symbol", "UNKNOWN"),
-                "name": base.get("name", "Unknown"),
+                "tokenAddress": token_address,
+                "symbol": base_token.get("symbol", "UNKNOWN"),
+                "name": base_token.get("name", "Unknown"),
                 "chain": "solana",
-                "priceUsd": float(best.get("priceUsd", 0) or 0),
-                "volume": {"h24": float(best.get("volume", {}).get("h24", 0) or 0)},
-                "liquidity": {"usd": float(best.get("liquidity", {}).get("usd", 0) or 0)},
-                "marketCap": float(best.get("marketCap", 0) or 0),
-                "priceChange": {"h24": float(best.get("priceChange", {}).get("h24", 0) or 0)},
+                "priceUsd": float(pair.get("priceUsd", 0) or 0),
+                "volume": {"h24": volume},
+                "liquidity": {"usd": liquidity},
+                "marketCap": mcap,
+                "priceChange": {"h24": float(pair.get("priceChange", {}).get("h24", 0) or 0)},
                 "source": "pumpfun_launch",
-                "tx_signature": sig,
                 "launch_time": datetime.utcnow().isoformat(),
             }
             launches.append(launch)
@@ -281,17 +272,17 @@ class PumpFunScanner:
             sell_usd = total_usd * sell_pct
 
             await executor.execute_sell(
-                token_address=trade.token_address,
-                symbol=trade.symbol,
+                token_address=str(trade.token_address),
+                symbol=str(trade.symbol),
                 amount_token=sell_usd / current_price if current_price > 0 else 0,
-                trade_id=trade.trade_id,
+                trade_id=str(trade.trade_id),
                 chain="solana",
                 reason=reason,
             )
             await DB.log_event(
                 "info", "pumpfun_partial_sell",
                 f"Sold {sell_pct*100:.0f}% of {trade.symbol} — {reason}",
-                {"token": trade.token_address, "sell_pct": sell_pct, "reason": reason},
+                {"token": str(trade.token_address), "sell_pct": sell_pct, "reason": reason},
             )
         finally:
             await executor.close()
@@ -302,7 +293,7 @@ class PumpFunScanner:
         """One scan cycle: detect launches → analyze → maybe buy."""
         await DB.log_event("info", "pumpfun_scan_started", "Scanning pump.fun for new launches")
 
-        launches = await self.detect_new_launches(limit=20)
+        launches = await self.detect_new_launches(limit=30)
         await DB.log_event("info", "pumpfun_launches_found", f"Found {len(launches)} new launches", {"count": len(launches)})
 
         for launch in launches:
@@ -322,7 +313,6 @@ class PumpFunScanner:
                         "source": "pumpfun_launch",
                         "chain": "solana",
                         "launch_time": launch.get("launch_time"),
-                        "tx_signature": launch.get("tx_signature"),
                     },
                 )
                 await DB.update_coin_market_data(
@@ -350,7 +340,6 @@ class PumpFunScanner:
                         "source": "pumpfun_launch",
                         "chain": "solana",
                         "launch_time": launch.get("launch_time"),
-                        "tx_signature": launch.get("tx_signature"),
                     },
                 )
                 await DB.update_coin_market_data(
