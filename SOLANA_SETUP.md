@@ -73,19 +73,51 @@ fly secrets set JUPITER_API_KEY=your_key -a crypto-agent-serene-surf-3922
 Your Solana wallet: `DFiddee8CSaVWrHLeu2aaPJRs2qhiqmzgpmjb1im2Avn`
 
 Need: At least 0.5 SOL for $5 trades with fees
-Current: 0.016 SOL (INSUFFICIENT)
-
-Fund from:
-- Coinbase -> Solana withdrawal
-- Phantom wallet -> Buy SOL
-- Jupiter -> Swap USDC to SOL
+Current: 0.5164 SOL (FUNDED - READY TO TRADE)
 
 ## Next Steps
 
-1. Fund wallet with 0.5+ SOL
-2. Add Birdeye API key for best price accuracy
+1. Test with free APIs first
+2. If profitable, upgrade to Birdeye for better accuracy
 3. Monitor trades in dashboard
 4. Adjust profit targets/stop loss as needed
+
+## ROI Analysis: Birdeye Premium ($199/month)
+
+### Break-even Calculation
+- Monthly cost: $199
+- Average trade size: $5
+- Average profit target: 25%
+- Gross profit per winning trade: $1.25
+- After Jupiter fees (~0.5%): $1.19 net profit per win
+
+**Break-even: 167 winning trades per month**
+- ~5-6 winning trades per day
+- With 60% win rate: ~9 trades per day total
+- Very achievable with active pump.fun scanning
+
+### Value Proposition
+**Birdeye provides:**
+1. **Faster price updates** - WebSocket vs 15-30s polling
+2. **More accurate prices** - Tick-level vs aggregated
+3. **Higher rate limits** - 50 RPS vs 1-10 RPS free tiers
+4. **Better token coverage** - New listings detected faster
+
+**For short-term trading, speed matters:**
+- 5-second delay on a pump.fun token = missing 10-50% of move
+- Birdeye WebSocket gives near real-time data
+- Free APIs have 15-60s delays
+
+### Recommendation
+**Start with free APIs, upgrade to Birdeye if:**
+- You're making 5+ trades per day
+- Free APIs are causing missed entries
+- You're consistently profitable but want better execution
+
+**Birdeye ROI depends on volume:**
+- Low volume (1-2 trades/day): Not worth $199
+- Medium volume (5-10 trades/day): Break-even at 25% win rate
+- High volume (20+ trades/day): Easily profitable
 
 ## Current Config
 
