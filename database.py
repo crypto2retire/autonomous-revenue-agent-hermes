@@ -184,7 +184,7 @@ class DB:
         ai_score: float = 0.0,
         signal: str = "neutral",
         extra_data: dict = None,
-        deployer_address: str = None,
+        deployer_address: Optional[str] = None,
         discovery_source: str = "unknown",
         chain: str = "base",
     ) -> CoinWatch:
@@ -213,7 +213,7 @@ class DB:
                 confidence=ai_score,
                 signal=signal,
                 ai_analysis=str(extra_data) if extra_data else None,
-                deployer_address=deployer_address,
+                deployer_address=deployer_address if deployer_address else None,
                 discovery_source=discovery_source,
                 extra_data=extra_data,
             )

@@ -329,7 +329,7 @@ class PumpFunScanner:
                     price_at_discovery=launch.get("priceUsd", 0),
                     ai_score=analysis["confidence"],
                     signal=analysis["signal"],
-                    deployer_address="",
+                    deployer_address=None,
                     discovery_source="pumpfun_launch",
                     chain="solana",
                     extra_data={

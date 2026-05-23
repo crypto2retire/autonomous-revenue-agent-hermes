@@ -844,7 +844,7 @@ Respond ONLY with valid JSON."""
                 price_at_discovery=token.get("priceUsd", 0),
                 ai_score=analysis["confidence"],
                 signal=analysis["signal"],
-                deployer_address=deployer_address or "",
+                deployer_address=deployer_address or None,
                 discovery_source=token.get("source", "unknown"),
                 chain=chain,
                 extra_data={
