@@ -16,6 +16,7 @@ from database import DB
 from scanner import Scanner
 from executor import Executor
 from dashboard import app
+from pumpfun_scanner import PumpFunScanner
 
 settings = get_settings()
 
@@ -38,6 +39,15 @@ async def run_executor():
         await executor.close()
 
 
+async def run_pumpfun_scanner():
+    """Background pump.fun launch scanner."""
+    pf = PumpFunScanner()
+    try:
+        await pf.run()
+    finally:
+        await pf.close()
+
+
 async def run_server():
     """FastAPI dashboard server."""
     config = uvicorn.Config(
@@ -56,10 +66,11 @@ async def main():
     await DB.init()
     await DB.log_event("info", "agent_started", "Crypto trading agent starting up")
 
-    # Run scanner, executor, and server concurrently
+    # Run scanner, executor, pump.fun scanner, and server concurrently
     await asyncio.gather(
         run_scanner(),
         run_executor(),
+        run_pumpfun_scanner(),
         run_server(),
     )
 

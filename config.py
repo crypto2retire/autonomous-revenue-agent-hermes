@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     stop_loss_pct: float = 0.05
     take_profit_pct: float = 0.10
 
+    # Helius
+    helius_api_key: Optional[SecretStr] = Field(None, description="Helius API key for Solana RPC")
+
     # Server
     host: str = "0.0.0.0"
     port: int = 8000
