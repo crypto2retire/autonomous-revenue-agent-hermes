@@ -11,7 +11,7 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 # Price source priority (fastest/most reliable first)
-PRICE_SOURCES = ["jupiter", "dexscreener", "coingecko"]
+PRICE_SOURCES = ["birdeye", "jupiter", "dexscreener", "coingecko"]
 
 
 class SolanaPriceClient:
