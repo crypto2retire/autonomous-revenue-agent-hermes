@@ -60,63 +60,47 @@ class Settings(BaseSettings):
             url = url.replace("&sslmode=require", "")
         return url
 
-    # Render PostgreSQL adds ?sslmode=require — we need to handle that
-    @property
-    def database_url_clean(self) -> str:
-        """Return database URL suitable for async SQLAlchemy."""
-        url = self.database_url.get_secret_value()
-        # Render PostgreSQL uses postgresql:// — convert to postgresql+asyncpg://
-        if url.startswith("postgresql://") and "+asyncpg" not in url:
-            url = url.replace("postgresql://", "postgresql+asyncpg://")
-        # Remove sslmode=require for asyncpg (it handles SSL differently)
-        if "?sslmode=require" in url:
-            url = url.replace("?sslmode=require", "")
-        elif "&sslmode=require" in url:
-            url = url.replace("&sslmode=require", "")
-        return url
-
     # BaseScan
     basescan_api_key: Optional[SecretStr] = None
 
-    # Optional APIs
-    wsic_api_key: Optional[SecretStr] = None
-    odos_api_key: Optional[SecretStr] = Field(None, description="Odos API key for V3 enterprise endpoints")
-
     # CoinGecko
     coingecko_api_key: Optional[SecretStr] = None
-    coingecko_plan: str = Field(default="demo", pattern="^(demo|pro)$")
+    coingecko_plan: str = "demo"  # "demo" or "pro"
 
     # Dune Analytics
     dune_api_key: Optional[SecretStr] = None
 
-    # Birdeye (Solana price feeds)
-    birdeye_api_key: Optional[SecretStr] = None
+    # Odos (aggregator)
+    odos_api_key: Optional[SecretStr] = None
 
-    # Trading
-    agent_mode: str = Field(default="paper", pattern="^(paper|live)$")
-    min_trade_size_usd: float = 1.0
-    max_trade_size_usd: float = 50.0
-    default_trade_size_usd: float = 5.0
+    # WhatShouldICharge API
+    wsic_api_key: Optional[SecretStr] = None
+
+    # Agent mode: "paper" or "live"
+    agent_mode: str = "paper"
+
+    # Trading settings
+    min_trade_size_usd: float = 10.0
+    max_trade_size_usd: float = 1000.0
     max_slippage: float = 0.02
     scan_interval_seconds: int = 300
-    chains_to_scan: str = Field(default="solana", description="Comma-separated chains to scan")
+    chains_to_scan: str = "solana"
 
     # Risk / Position Management
-    max_daily_loss_usd: float = 50.0
+    max_daily_loss_usd: float = 100.0
     max_positions: int = 10
     stop_loss_pct: float = 0.15
     take_profit_pct: float = 0.25
 
-    # Pump.fun specific
-    pumpfun_min_trade_usd: float = 1.0
-    pumpfun_max_trade_usd: float = 10.0
-    pumpfun_scan_interval_seconds: int = 60
+    # Pump.fun specific settings
+    pumpfun_min_liquidity_usd: float = 5000.0
+    pumpfun_max_age_hours: int = 24
     pumpfun_profit_target_1: float = 0.25  # 25% profit = sell 60%
     pumpfun_profit_target_2: float = 0.50  # 50% profit = sell 80%
     pumpfun_stop_loss: float = 0.15  # -15% stop loss
 
     # Sell Agent Settings
-    sell_agent_enabled: bool = Field(default=True, description="Enable the autonomous sell agent")
+    sell_agent_enabled: bool = True
     sell_check_interval_seconds: int = 30
     trailing_stop_enabled: bool = True
     trailing_stop_distance_pct: float = 0.10
@@ -130,7 +114,7 @@ class Settings(BaseSettings):
     min_free_capital_pct: float = 0.20
     emergency_stop_loss_pct: float = 0.30
 
-    # Server
+    # Server settings
     host: str = "0.0.0.0"
     port: int = 8000
 
