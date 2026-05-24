@@ -60,6 +60,21 @@ class Settings(BaseSettings):
             url = url.replace("&sslmode=require", "")
         return url
 
+    # Render PostgreSQL adds ?sslmode=require — we need to handle that
+    @property
+    def database_url_clean(self) -> str:
+        """Return database URL suitable for async SQLAlchemy."""
+        url = self.database_url.get_secret_value()
+        # Render PostgreSQL uses postgresql:// — convert to postgresql+asyncpg://
+        if url.startswith("postgresql://") and "+asyncpg" not in url:
+            url = url.replace("postgresql://", "postgresql+asyncpg://")
+        # Remove sslmode=require for asyncpg (it handles SSL differently)
+        if "?sslmode=require" in url:
+            url = url.replace("?sslmode=require", "")
+        elif "&sslmode=require" in url:
+            url = url.replace("&sslmode=require", "")
+        return url
+
     # BaseScan
     basescan_api_key: Optional[SecretStr] = None
 

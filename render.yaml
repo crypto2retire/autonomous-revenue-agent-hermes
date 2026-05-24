@@ -1,0 +1,119 @@
+# Render Blueprint for Crypto Trading Agent
+# Deploys: Web Service (FastAPI) + PostgreSQL Database
+# Usage: Copy this to render.yaml, push to GitHub, connect repo to Render
+
+services:
+  - type: web
+    name: crypto-trading-agent
+    runtime: docker
+    repo: https://github.com/crypto2retire/autonomous-revenue-agent-hermes
+    branch: main
+    plan: standard
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: agent-db
+          property: connectionString
+      - key: AGENT_MODE
+        value: paper
+      - key: PORT
+        value: "8000"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: HOST
+        value: "0.0.0.0"
+      # LLM Provider (DeepSeek)
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: DEEPSEEK_MODEL
+        value: deepseek-chat
+      - key: DEEPSEEK_BASE_URL
+        value: https://api.deepseek.com/v1
+      # Venice AI (fallback)
+      - key: VENICE_API_KEY
+        sync: false
+      - key: VENICE_MODEL
+        value: claude-opus-4.6
+      - key: VENICE_BASE_URL
+        value: https://api.venice.ai/api/v1
+      # Base Chain
+      - key: BASE_WALLET_ADDRESS
+        sync: false
+      - key: BASE_RPC
+        value: https://mainnet.base.org
+      # Solana Chain
+      - key: SOLANA_WALLET_ADDRESS
+        sync: false
+      - key: SOLANA_RPC
+        value: https://api.mainnet-beta.solana.com
+      # APIs
+      - key: BASESCAN_API_KEY
+        sync: false
+      - key: COINGECKO_API_KEY
+        sync: false
+      - key: COINGECKO_PLAN
+        value: demo
+      - key: DUNE_API_KEY
+        sync: false
+      - key: BIRDEYE_API_KEY
+        sync: false
+      # Trading Settings
+      - key: MIN_TRADE_SIZE_USD
+        value: "10.0"
+      - key: MAX_TRADE_SIZE_USD
+        value: "1000.0"
+      - key: MAX_SLIPPAGE
+        value: "0.02"
+      - key: SCAN_INTERVAL_SECONDS
+        value: "300"
+      - key: CHAINS_TO_SCAN
+        value: solana
+      # Risk / Position Management
+      - key: MAX_DAILY_LOSS_USD
+        value: "100.0"
+      - key: MAX_POSITIONS
+        value: "10"
+      - key: STOP_LOSS_PCT
+        value: "0.15"
+      - key: TAKE_PROFIT_PCT
+        value: "0.25"
+      # Sell Agent Settings
+      - key: SELL_AGENT_ENABLED
+        value: "true"
+      - key: SELL_CHECK_INTERVAL_SECONDS
+        value: "30"
+      - key: TRAILING_STOP_ENABLED
+        value: "true"
+      - key: TRAILING_STOP_DISTANCE_PCT
+        value: "0.10"
+      - key: PROFIT_TARGET_1_PCT
+        value: "0.25"
+      - key: PROFIT_TARGET_1_SELL_PCT
+        value: "0.60"
+      - key: PROFIT_TARGET_2_PCT
+        value: "0.50"
+      - key: PROFIT_TARGET_2_SELL_PCT
+        value: "0.80"
+      - key: MAX_HOLD_HOURS
+        value: "168"
+      - key: UNDERPERFORM_SELL_THRESHOLD_PCT
+        value: "-0.20"
+      - key: CAPITAL_RECYCLE_ENABLED
+        value: "true"
+      - key: MIN_FREE_CAPITAL_PCT
+        value: "0.20"
+      - key: EMERGENCY_STOP_LOSS_PCT
+        value: "0.30"
+    healthCheckPath: /health
+    autoDeploy: true
+
+databases:
+  - name: agent-db
+    databaseName: agent_db
+    user: agent_user
+    plan: standard
+    region: oregon
+    postgresMajorVersion: "16"
+    ipAllowList: []

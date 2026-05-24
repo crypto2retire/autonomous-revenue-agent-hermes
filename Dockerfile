@@ -2,15 +2,24 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Ensure data directory exists for persistent SQLite volume
-RUN mkdir -p /data
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install dependencies
+# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application
+# Copy application code
 COPY . .
 
-# Run the autonomous revenue agent (not the Hermes CLI)
-CMD ["sh", "entrypoint.sh"]
+# Create data directory for SQLite backup fallback
+RUN mkdir -p /app/data
+
+# Expose port
+EXPOSE 8000
+
+# Run the agent (scanner + position manager + wallet monitor + dashboard)
+CMD ["python", "-c", "import asyncio; from main import main; asyncio.run(main())"]

@@ -12,3 +12,4 @@ web3
 solana>=0.30.0
 solders
 base58
+psycopg2-binary

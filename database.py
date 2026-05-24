@@ -36,7 +36,7 @@ def backup_db():
 restore_db()
 
 # Handle both PostgreSQL and SQLite async URLs
-database_url = settings.database_url.get_secret_value()
+database_url = settings.database_url_clean
 if database_url.startswith("sqlite+aiolibsql://"):
     # Turso cloud SQLite (async)
     from sqlalchemy.pool import AsyncAdaptedQueuePool
@@ -57,13 +57,13 @@ elif database_url.startswith("sqlite:///"):
         pool_pre_ping=True,
     )
 else:
-    # For PostgreSQL, ensure async driver
-    if database_url.startswith("postgresql://"):
-        database_url = database_url.replace("postgresql://", "postgresql+asyncpg://")
+    # PostgreSQL with asyncpg (Render provides postgresql://)
     engine = create_async_engine(
         database_url,
         echo=False,
         pool_pre_ping=True,
+        # Render PostgreSQL requires SSL
+        connect_args={"ssl": True} if "render.com" in database_url else {},
     )
 
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
