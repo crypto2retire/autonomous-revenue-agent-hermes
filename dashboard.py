@@ -250,6 +250,21 @@ async def set_setting_api(key: str, value: str, value_type: str = "string"):
 
 # ── Live Trading Toggle ────────────────────────────────────────────
 
+@app.get("/api/birdeye-usage")
+async def get_birdeye_usage_api():
+    """Get Birdeye API usage stats."""
+    from solana_price_client import get_solana_price_client
+    try:
+        client = await get_solana_price_client()
+        usage = client.get_birdeye_usage()
+        return {
+            "birdeye_usage": usage,
+            "status": "ok",
+        }
+    except Exception as e:
+        return {"error": str(e), "status": "error"}
+
+
 @app.get("/api/trading/status")
 async def get_trading_status():
     """Get current trading status. Live is only effective when env AGENT_MODE=live and dashboard switch is enabled."""
