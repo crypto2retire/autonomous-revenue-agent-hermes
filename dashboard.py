@@ -1202,15 +1202,29 @@ async def dashboard():
             }
         }
 
-        // Auto-refresh watchlist every 30s
+        // Auto-refresh all visible panels every 30s
+        function refreshActivePanel() {
+            const panels = document.querySelectorAll('.panel.active');
+            panels.forEach(panel => {
+                const id = panel.id;
+                if (id === 'watchlist-panel') loadWatchlist();
+                if (id === 'market-panel') loadMarket();
+                if (id === 'deployers-panel') loadDeployers();
+                if (id === 'trades-panel') loadTrades();
+                if (id === 'positions-panel') loadPositions();
+                if (id === 'performance-panel') loadPerformance();
+                if (id === 'logs-panel') loadLogs();
+                if (id === 'settings-panel') loadSettings();
+            });
+        }
+
+        // Initial load
         loadWatchlist();
         loadSettings();
         loadPositions();
-        setInterval(() => {
-            if (document.getElementById('watchlist-panel').classList.contains('active')) {
-                loadWatchlist();
-            }
-        }, 30000);
+
+        // Auto-refresh every 30s
+        setInterval(refreshActivePanel, 30000);
     </script>
 </body>
 </html>"""
