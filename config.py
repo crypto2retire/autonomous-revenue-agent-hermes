@@ -45,6 +45,21 @@ class Settings(BaseSettings):
     # Database
     database_url: SecretStr = Field(default=SecretStr("sqlite:///app.db"), description="Database connection string (PostgreSQL or SQLite)")
 
+    # Render PostgreSQL adds ?sslmode=require — we need to handle that
+    @property
+    def database_url_clean(self) -> str:
+        """Return database URL suitable for async SQLAlchemy."""
+        url = self.database_url.get_secret_value()
+        # Render PostgreSQL uses postgresql:// — convert to postgresql+asyncpg://
+        if url.startswith("postgresql://") and "+asyncpg" not in url:
+            url = url.replace("postgresql://", "postgresql+asyncpg://")
+        # Remove sslmode=require for asyncpg (it handles SSL differently)
+        if "?sslmode=require" in url:
+            url = url.replace("?sslmode=require", "")
+        elif "&sslmode=require" in url:
+            url = url.replace("&sslmode=require", "")
+        return url
+
     # BaseScan
     basescan_api_key: Optional[SecretStr] = None
 
@@ -59,6 +74,9 @@ class Settings(BaseSettings):
     # Dune Analytics
     dune_api_key: Optional[SecretStr] = None
 
+    # Birdeye (Solana price feeds)
+    birdeye_api_key: Optional[SecretStr] = None
+
     # Trading
     agent_mode: str = Field(default="paper", pattern="^(paper|live)$")
     min_trade_size_usd: float = 1.0
@@ -68,7 +86,7 @@ class Settings(BaseSettings):
     scan_interval_seconds: int = 300
     chains_to_scan: str = Field(default="solana", description="Comma-separated chains to scan")
 
-    # Risk
+    # Risk / Position Management
     max_daily_loss_usd: float = 50.0
     max_positions: int = 10
     stop_loss_pct: float = 0.15
@@ -82,8 +100,20 @@ class Settings(BaseSettings):
     pumpfun_profit_target_2: float = 0.50  # 50% profit = sell 80%
     pumpfun_stop_loss: float = 0.15  # -15% stop loss
 
-    # Helius
-    helius_api_key: Optional[SecretStr] = Field(None, description="Helius API key for Solana RPC")
+    # Sell Agent Settings
+    sell_agent_enabled: bool = Field(default=True, description="Enable the autonomous sell agent")
+    sell_check_interval_seconds: int = 30
+    trailing_stop_enabled: bool = True
+    trailing_stop_distance_pct: float = 0.10
+    profit_target_1_pct: float = 0.25
+    profit_target_1_sell_pct: float = 0.60
+    profit_target_2_pct: float = 0.50
+    profit_target_2_sell_pct: float = 0.80
+    max_hold_hours: int = 168
+    underperform_sell_threshold_pct: float = -0.20
+    capital_recycle_enabled: bool = True
+    min_free_capital_pct: float = 0.20
+    emergency_stop_loss_pct: float = 0.30
 
     # Server
     host: str = "0.0.0.0"

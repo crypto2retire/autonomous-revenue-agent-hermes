@@ -60,8 +60,6 @@ else:
     # For PostgreSQL, ensure async driver
     if database_url.startswith("postgresql://"):
         database_url = database_url.replace("postgresql://", "postgresql+asyncpg://")
-    elif database_url.startswith("postgres://"):
-        database_url = database_url.replace("postgres://", "postgresql+asyncpg://")
     engine = create_async_engine(
         database_url,
         echo=False,
@@ -72,7 +70,7 @@ async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit
 
 
 class DB:
-    """Database operations."""
+    """Database access layer."""
 
     @staticmethod
     async def init():
@@ -510,6 +508,7 @@ class DB:
         close_reason: str = None,
         pnl_usd: float = None,
         pnl_pct: float = None,
+        amount_sold_pct: float = None,
     ):
         """Update an existing trade."""
         async with async_session() as session:
@@ -536,6 +535,38 @@ class DB:
                     trade.pnl_usd = pnl_usd
                 if pnl_pct is not None:
                     trade.pnl_pct = pnl_pct
+                if amount_sold_pct is not None:
+                    trade.amount_sold_pct = amount_sold_pct
+                await session.commit()
+
+    @staticmethod
+    async def update_trade_highest_price(trade_id: str, highest_price: float):
+        """Update the highest price seen for a trade."""
+        async with async_session() as session:
+            result = await session.execute(
+                select(Trade).where(Trade.trade_id == trade_id)
+            )
+            trade = result.scalar_one_or_none()
+            if trade:
+                trade.highest_price_seen = highest_price
+                # Update trailing stop
+                if trade.highest_price_seen:
+                    trade.trailing_stop_price = float(trade.highest_price_seen) * (1 - settings.trailing_stop_distance_pct)
+                await session.commit()
+
+    @staticmethod
+    async def update_trade_profit_target(trade_id: str, target_1: bool = None, target_2: bool = None):
+        """Update profit target hit flags."""
+        async with async_session() as session:
+            result = await session.execute(
+                select(Trade).where(Trade.trade_id == trade_id)
+            )
+            trade = result.scalar_one_or_none()
+            if trade:
+                if target_1 is not None:
+                    trade.profit_target_1_hit = target_1
+                if target_2 is not None:
+                    trade.profit_target_2_hit = target_2
                 await session.commit()
 
     @staticmethod
@@ -607,6 +638,118 @@ class DB:
                     "pnl_pct": pnl_pct,
                     "executed_at": trade.executed_at.isoformat() if trade.executed_at else None,
                     "tx_hash": trade.tx_hash,
+                })
+            
+            return positions
+
+    @staticmethod
+    async def get_portfolio_summary() -> Dict[str, Any]:
+        """Get portfolio summary with total PNL."""
+        async with async_session() as session:
+            # Get all executed buy trades
+            result = await session.execute(
+                select(Trade)
+                .where(Trade.status == "executed")
+                .where(Trade.side == "buy")
+            )
+            trades = result.scalars().all()
+            
+            total_invested = 0
+            total_current_value = 0
+            positions = []
+            
+            for trade in trades:
+                coin_result = await session.execute(
+                    select(CoinWatch).where(CoinWatch.token_address == trade.token_address)
+                )
+                coin = coin_result.scalar_one_or_none()
+                
+                current_price = float(coin.last_price_usd) if coin and coin.last_price_usd else 0
+                entry_price = float(trade.entry_price) if trade.entry_price else 0
+                amount_usd = float(trade.amount_usd) if trade.amount_usd else 0
+                
+                if entry_price > 0 and current_price > 0:
+                    pnl_pct = ((current_price - entry_price) / entry_price) * 100
+                    pnl_usd = amount_usd * (pnl_pct / 100)
+                    current_value = amount_usd + pnl_usd
+                else:
+                    pnl_pct = 0
+                    pnl_usd = 0
+                    current_value = amount_usd
+                
+                total_invested += amount_usd
+                total_current_value += current_value
+                
+                positions.append({
+                    "symbol": trade.symbol,
+                    "amount_usd": amount_usd,
+                    "pnl_usd": pnl_usd,
+                    "pnl_pct": pnl_pct,
+                })
+            
+            total_pnl_usd = total_current_value - total_invested
+            total_pnl_pct = ((total_current_value - total_invested) / total_invested * 100) if total_invested > 0 else 0
+            
+            return {
+                "total_invested": total_invested,
+                "total_current_value": total_current_value,
+                "total_pnl_usd": total_pnl_usd,
+                "total_pnl_pct": total_pnl_pct,
+                "position_count": len(positions),
+                "positions": positions,
+            }
+
+    # --- Open Positions (with live PNL) ---
+
+    @staticmethod
+    async def get_open_positions() -> List[Dict[str, Any]]:
+        """Get all open positions with current PNL."""
+        async with async_session() as session:
+            result = await session.execute(
+                select(Trade)
+                .where(Trade.status == "executed")
+                .where(Trade.side == "buy")
+                .order_by(desc(Trade.executed_at))
+            )
+            trades = result.scalars().all()
+            
+            positions = []
+            for trade in trades:
+                # Get current coin price
+                coin_result = await session.execute(
+                    select(CoinWatch).where(CoinWatch.token_address == trade.token_address)
+                )
+                coin = coin_result.scalar_one_or_none()
+                
+                current_price = float(coin.last_price_usd) if coin and coin.last_price_usd else 0
+                entry_price = float(trade.entry_price) if trade.entry_price else 0
+                amount_usd = float(trade.amount_usd) if trade.amount_usd else 0
+                
+                # Calculate PNL
+                if entry_price > 0 and current_price > 0:
+                    pnl_pct = ((current_price - entry_price) / entry_price) * 100
+                    pnl_usd = amount_usd * (pnl_pct / 100)
+                else:
+                    pnl_pct = 0
+                    pnl_usd = 0
+                
+                positions.append({
+                    "trade_id": trade.trade_id,
+                    "symbol": trade.symbol,
+                    "token_address": trade.token_address,
+                    "chain": trade.chain,
+                    "amount_usd": amount_usd,
+                    "entry_price": entry_price,
+                    "current_price": current_price,
+                    "pnl_usd": pnl_usd,
+                    "pnl_pct": pnl_pct,
+                    "executed_at": trade.executed_at.isoformat() if trade.executed_at else None,
+                    "tx_hash": trade.tx_hash,
+                    "highest_price_seen": float(trade.highest_price_seen) if trade.highest_price_seen else entry_price,
+                    "trailing_stop_price": float(trade.trailing_stop_price) if trade.trailing_stop_price else None,
+                    "profit_target_1_hit": trade.profit_target_1_hit,
+                    "profit_target_2_hit": trade.profit_target_2_hit,
+                    "amount_sold_pct": float(trade.amount_sold_pct) if trade.amount_sold_pct else 0.0,
                 })
             
             return positions

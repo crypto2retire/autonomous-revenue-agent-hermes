@@ -2,8 +2,10 @@
 
 Runs:
 1. FastAPI dashboard server (port 8000)
-2. Background scanner loop
-3. Background position manager loop
+2. Background scanner loop (Buy Agent)
+3. Background position manager loop (Sell Agent)
+4. Background wallet monitor loop
+5. Background pump.fun scanner
 """
 
 import asyncio
@@ -15,6 +17,8 @@ from config import get_settings
 from database import DB
 from scanner import Scanner
 from executor import Executor
+from position_manager import PositionManager
+from wallet_monitor import WalletMonitor
 from dashboard import app
 from pumpfun_scanner import PumpFunScanner
 
@@ -22,7 +26,7 @@ settings = get_settings()
 
 
 async def run_scanner():
-    """Background token scanner."""
+    """Background token scanner (Buy Agent)."""
     scanner = Scanner()
     try:
         await scanner.run()
@@ -30,13 +34,22 @@ async def run_scanner():
         await scanner.close()
 
 
-async def run_executor():
-    """Background trade executor / position manager."""
-    executor = Executor()
+async def run_position_manager():
+    """Background position manager (Sell Agent)."""
+    pm = PositionManager()
     try:
-        await executor.run()
+        await pm.run()
     finally:
-        await executor.close()
+        await pm.close()
+
+
+async def run_wallet_monitor():
+    """Background wallet monitor."""
+    wm = WalletMonitor()
+    try:
+        await wm.run()
+    finally:
+        await wm.close()
 
 
 async def run_pumpfun_scanner():
@@ -74,16 +87,23 @@ async def main():
     """Start everything."""
     # Initialize database
     await DB.init()
-    await DB.log_event("info", "agent_started", "Crypto trading agent starting up")
+    await DB.log_event("info", "agent_started", "Crypto trading agent starting up — Buy Agent + Sell Agent + Wallet Monitor + Pump.fun Scanner")
 
-    # Run scanner, executor, pump.fun scanner, backup, and server concurrently
-    await asyncio.gather(
+    # Run all components concurrently
+    tasks = [
         run_scanner(),
-        run_executor(),
+        run_position_manager(),
+        run_wallet_monitor(),
         run_pumpfun_scanner(),
-        run_backup(),
         run_server(),
-    )
+    ]
+
+    # Only run backup if using SQLite (PostgreSQL doesn't need it)
+    database_url = settings.database_url.get_secret_value()
+    if database_url.startswith("sqlite"):
+        tasks.append(run_backup())
+
+    await asyncio.gather(*tasks)
 
 
 if __name__ == "__main__":

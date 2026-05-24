@@ -425,24 +425,30 @@ class Executor:
             tx_hash=signature,
         )
 
-    # ── Position Manager ─────────────────────────────────────────────
+    # ── Position Manager (DEPRECATED — use position_manager.py) ──────
 
     async def check_positions(self):
-        """Check open positions for stop-loss / take-profit."""
-        open_trades = await DB.get_trades(status=TradeStatus.EXECUTED, limit=100)
-        for trade in open_trades:
-            # In a real implementation, fetch current price and compare to entry
-            pass
+        """Check open positions for stop-loss / take-profit.
+        
+        DEPRECATED: This logic has been moved to position_manager.py (Sell Agent).
+        Kept for backward compatibility.
+        """
+        pass
 
     async def run(self):
-        """Background position manager loop."""
+        """Background position manager loop.
+        
+        DEPRECATED: The Sell Agent now runs in position_manager.py.
+        This loop is kept minimal to avoid conflicts.
+        """
         self.running = True
         while self.running:
             try:
-                await self.check_positions()
+                # Minimal check — real logic is in PositionManager
+                await asyncio.sleep(60)
             except Exception as e:
-                await DB.log_event("error", "position_check_failed", str(e))
-            await asyncio.sleep(60)
+                await DB.log_event("error", "executor_loop_failed", str(e))
+                await asyncio.sleep(60)
 
     def stop(self):
         self.running = False

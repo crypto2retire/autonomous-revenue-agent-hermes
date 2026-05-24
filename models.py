@@ -27,6 +27,17 @@ class TradeStatus(str, PyEnum):
     CLOSED = "closed"
 
 
+class SellReason(str, PyEnum):
+    STOP_LOSS = "stop_loss"
+    TAKE_PROFIT = "take_profit"
+    TRAILING_STOP = "trailing_stop"
+    MAX_HOLD_TIME = "max_hold_time"
+    UNDERPERFORM = "underperform"
+    CAPITAL_RECYCLE = "capital_recycle"
+    MANUAL = "manual"
+    SIGNAL = "signal"
+
+
 class DeployerReputation(str, PyEnum):
     UNKNOWN = "unknown"
     TRUSTED = "trusted"
@@ -258,6 +269,13 @@ class Trade(Base):
     closed_at = Column(DateTime(timezone=True))
     close_reason = Column(String(50))
 
+    # Position tracking for sell agent
+    highest_price_seen = Column(Numeric(24, 12))
+    trailing_stop_price = Column(Numeric(24, 12))
+    profit_target_1_hit = Column(Boolean, default=False)
+    profit_target_2_hit = Column(Boolean, default=False)
+    amount_sold_pct = Column(Numeric(5, 4), default=0.0)
+
     __table_args__ = (
         Index("idx_trades_status", "status"),
         Index("idx_trades_created", "created_at"),
@@ -286,6 +304,11 @@ class Trade(Base):
             "executed_at": self.executed_at.isoformat() if self.executed_at else None,
             "closed_at": self.closed_at.isoformat() if self.closed_at else None,
             "close_reason": self.close_reason,
+            "highest_price_seen": _f(self.highest_price_seen),
+            "trailing_stop_price": _f(self.trailing_stop_price),
+            "profit_target_1_hit": self.profit_target_1_hit,
+            "profit_target_2_hit": self.profit_target_2_hit,
+            "amount_sold_pct": _f(self.amount_sold_pct),
         }
 
 
