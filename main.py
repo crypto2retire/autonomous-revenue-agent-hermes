@@ -71,6 +71,16 @@ async def run_backup():
             print(f"Backup error: {e}")
 
 
+async def run_price_history_cleanup():
+    """Delete old price history older than 24h to keep table small."""
+    while True:
+        await asyncio.sleep(3600)  # every hour
+        try:
+            await DB.cleanup_old_price_history()
+        except Exception as e:
+            print(f"Price history cleanup error: {e}")
+
+
 async def run_server():
     """FastAPI dashboard server."""
     config = uvicorn.Config(
@@ -102,6 +112,7 @@ async def main():
     database_url = settings.database_url.get_secret_value()
     if database_url.startswith("sqlite"):
         tasks.append(run_backup())
+        tasks.append(run_price_history_cleanup())
 
     await asyncio.gather(*tasks)
 

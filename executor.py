@@ -202,8 +202,17 @@ class Executor:
             price_client = await get_solana_price_client()
             actual_token_price = await price_client.get_price(token_address, vs_token="USDC")
             if actual_token_price is None or actual_token_price <= 0:
-                actual_token_price = amount_usd  # Fallback to amount if price fetch fails
-            
+                await DB.update_trade(trade_id=trade_id, status=TradeStatus.FAILED)
+                await DB.log_event(
+                    "error", "trade_price_fetch_failed",
+                    f"Could not fetch price for {symbol} ({chain}) — trade aborted",
+                    {"token_address": token_address, "symbol": symbol, "chain": chain, "trade_id": trade_id},
+                )
+                return None
+
+            # Calculate token quantity bought
+            amount_token = amount_usd / actual_token_price if actual_token_price > 0 else 0
+
             # Update coin price in database so position manager can find it
             await DB.update_coin_market_data(
                 token_address=token_address,
@@ -218,6 +227,7 @@ class Executor:
                     status=TradeStatus.EXECUTED,
                     executed_at=datetime.utcnow(),
                     entry_price=actual_token_price,
+                    amount_token=amount_token,
                     tx_hash=f"PAPER-{uuid.uuid4().hex[:16]}",
                 )
                 await DB.log_event(

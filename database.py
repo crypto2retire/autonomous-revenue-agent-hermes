@@ -290,6 +290,9 @@ class DB:
                     if old_price > 0:
                         pct = ((current_price - old_price) / old_price) * 100
                         setattr(coin, column_name, pct)
+                else:
+                    # No history in interval — clear the field so UI shows "—"
+                    setattr(coin, column_name, None)
             await session.commit()
 
     @staticmethod
@@ -509,6 +512,7 @@ class DB:
         pnl_usd: float = None,
         pnl_pct: float = None,
         amount_sold_pct: float = None,
+        amount_token: float = None,
     ):
         """Update an existing trade."""
         async with async_session() as session:
@@ -537,6 +541,8 @@ class DB:
                     trade.pnl_pct = pnl_pct
                 if amount_sold_pct is not None:
                     trade.amount_sold_pct = amount_sold_pct
+                if amount_token is not None:
+                    trade.amount_token = amount_token
                 await session.commit()
 
     @staticmethod
@@ -616,17 +622,22 @@ class DB:
                 )
                 coin = coin_result.scalar_one_or_none()
                 
-                current_price = float(coin.last_price_usd) if coin and coin.last_price_usd else 0
-                entry_price = float(trade.entry_price) if trade.entry_price else 0
-                amount_usd = float(trade.amount_usd) if trade.amount_usd else 0
+                current_price = float(coin.last_price_usd) if coin and coin.last_price_usd is not None else None
+                entry_price = float(trade.entry_price) if trade.entry_price is not None else None
+                amount_usd = float(trade.amount_usd) if trade.amount_usd is not None else 0
+                amount_token = float(trade.amount_token) if trade.amount_token is not None else 0
                 
-                # Calculate PNL
-                if entry_price > 0 and current_price > 0:
+                # Derive token quantity if missing
+                if amount_token <= 0 and entry_price is not None and entry_price > 0:
+                    amount_token = amount_usd / entry_price
+                
+                # Calculate PNL using token quantity for accuracy
+                if entry_price is not None and entry_price > 0 and current_price is not None and current_price > 0:
                     pnl_pct = ((current_price - entry_price) / entry_price) * 100
-                    pnl_usd = amount_usd * (pnl_pct / 100)
+                    pnl_usd = amount_token * (current_price - entry_price)
                 else:
-                    pnl_pct = 0
-                    pnl_usd = 0
+                    pnl_pct = None
+                    pnl_usd = None
                 
                 positions.append({
                     "trade_id": trade.trade_id,
@@ -634,6 +645,7 @@ class DB:
                     "token_address": trade.token_address,
                     "chain": trade.chain,
                     "amount_usd": amount_usd,
+                    "amount_token": amount_token,
                     "entry_price": entry_price,
                     "current_price": current_price,
                     "pnl_usd": pnl_usd,
@@ -671,17 +683,21 @@ class DB:
                 )
                 coin = coin_result.scalar_one_or_none()
                 
-                current_price = float(coin.last_price_usd) if coin and coin.last_price_usd else 0
-                entry_price = float(trade.entry_price) if trade.entry_price else 0
-                amount_usd = float(trade.amount_usd) if trade.amount_usd else 0
+                current_price = float(coin.last_price_usd) if coin and coin.last_price_usd is not None else None
+                entry_price = float(trade.entry_price) if trade.entry_price is not None else None
+                amount_usd = float(trade.amount_usd) if trade.amount_usd is not None else 0
+                amount_token = float(trade.amount_token) if trade.amount_token is not None else 0
                 
-                if entry_price > 0 and current_price > 0:
+                if amount_token <= 0 and entry_price is not None and entry_price > 0:
+                    amount_token = amount_usd / entry_price
+                
+                if entry_price is not None and entry_price > 0 and current_price is not None and current_price > 0:
                     pnl_pct = ((current_price - entry_price) / entry_price) * 100
-                    pnl_usd = amount_usd * (pnl_pct / 100)
+                    pnl_usd = amount_token * (current_price - entry_price)
                     current_value = amount_usd + pnl_usd
                 else:
-                    pnl_pct = 0
-                    pnl_usd = 0
+                    pnl_pct = None
+                    pnl_usd = None
                     current_value = amount_usd
                 
                 total_invested += amount_usd
@@ -690,6 +706,7 @@ class DB:
                 positions.append({
                     "symbol": trade.symbol,
                     "amount_usd": amount_usd,
+                    "amount_token": amount_token,
                     "pnl_usd": pnl_usd,
                     "pnl_pct": pnl_pct,
                 })
@@ -926,3 +943,18 @@ class DB:
             if setting:
                 await session.delete(setting)
                 await session.commit()
+
+    @staticmethod
+    async def cleanup_old_price_history(hours: int = 24):
+        """Delete price history older than N hours to keep table small."""
+        async with async_session() as session:
+            since = datetime.utcnow() - timedelta(hours=hours)
+            result = await session.execute(
+                select(PriceHistory).where(PriceHistory.created_at < since)
+            )
+            old_records = result.scalars().all()
+            for record in old_records:
+                await session.delete(record)
+            if old_records:
+                await session.commit()
+                print(f"Cleaned up {len(old_records)} old price history records")

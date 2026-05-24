@@ -40,7 +40,7 @@ class PositionManager:
 
     # ── Price Fetching ───────────────────────────────────────────────
 
-    async def _get_current_price(self, token_address: str, chain: str) -> float:
+    async def _get_current_price(self, token_address: str, chain: str) -> Optional[float]:
         """Get current token price using SolanaPriceClient with Birdeye priority."""
         # First check CoinWatch cache
         coin = await DB.get_coin(token_address)
@@ -61,7 +61,7 @@ class PositionManager:
             except Exception as e:
                 await DB.log_event("warning", "price_fetch_failed", f"Failed to fetch price for {token_address}: {e}")
         
-        return 0.0
+        return None
 
     async def _refresh_all_position_prices(self):
         """Background task: refresh prices for all open positions."""
@@ -73,13 +73,41 @@ class PositionManager:
                 if token_address:
                     try:
                         price = await self._get_current_price(token_address, chain)
-                        if price > 0:
+                        if price is not None and price > 0:
                             await DB.update_coin_market_data(token_address, price_usd=price)
                     except Exception as e:
                         await DB.log_event("warning", "price_refresh_failed", 
                             f"Failed to refresh price for {pos.get('symbol', 'UNKNOWN')}: {e}")
         except Exception as e:
             await DB.log_event("error", "price_refresh_loop_failed", str(e))
+
+    async def _refresh_watchlist_prices(self):
+        """Background task: refresh prices for ALL watchlist coins (not just positions)."""
+        try:
+            coins = await DB.get_all_coins(limit=500)
+            for coin in coins:
+                token_address = str(coin.token_address) if coin.token_address is not None else ""
+                if token_address == "":
+                    continue
+                chain = str(coin.chain) if coin.chain is not None else "solana"
+                symbol = str(coin.symbol) if coin.symbol is not None else "UNKNOWN"
+                try:
+                    price = await self._get_current_price(token_address, chain)
+                    if price is not None and price > 0:
+                        await DB.update_coin_market_data(token_address, price_usd=price)
+                        # Also record price history for intraday calculations
+                        await DB.record_price_history(
+                            token_address=token_address,
+                            symbol=symbol,
+                            price_usd=price,
+                        )
+                        # Update intraday changes
+                        await DB.update_coin_intraday_changes(token_address)
+                except Exception as e:
+                    await DB.log_event("warning", "watchlist_price_refresh_failed", 
+                        f"Failed to refresh price for {symbol}: {e}")
+        except Exception as e:
+            await DB.log_event("error", "watchlist_price_refresh_loop_failed", str(e))
 
     # ── Position Evaluation ──────────────────────────────────────────
 
@@ -95,12 +123,16 @@ class PositionManager:
         amount_sold_pct = float(trade.amount_sold_pct) if trade.amount_sold_pct is not None else 0.0
 
         current_price = await self._get_current_price(token_address, chain)
-        if current_price <= 0 or entry_price <= 0:
+        if current_price is None or current_price <= 0 or entry_price <= 0:
             return {"should_sell": False, "reason": None, "pnl_pct": 0}
 
         # Calculate PNL
         pnl_pct = ((current_price - entry_price) / entry_price) * 100
-        pnl_usd = amount_usd * (pnl_pct / 100)
+        amount_token = float(trade.amount_token) if trade.amount_token is not None else 0.0
+        if amount_token > 0:
+            pnl_usd = amount_token * (current_price - entry_price)
+        else:
+            pnl_usd = amount_usd * (pnl_pct / 100)
 
         # Update highest price seen
         if current_price > highest_price:
@@ -163,7 +195,7 @@ class PositionManager:
             return result
 
         # 5. Trailing stop (if enabled and price has dropped from peak)
-        if settings.trailing_stop_enabled and current_price < trailing_stop_price and highest_price > entry_price * 1.05:
+        if settings.trailing_stop_enabled and current_price is not None and current_price < trailing_stop_price and highest_price > entry_price * 1.05:
             result["should_sell"] = True
             result["reason"] = SellReason.TRAILING_STOP
             result["sell_pct"] = 100.0
@@ -332,6 +364,8 @@ class PositionManager:
                     price_refresh_counter = 0
                 
                 await self.check_all_positions()
+                # Also refresh prices for ALL watchlist coins every cycle to keep data fresh
+                await self._refresh_watchlist_prices()
             except Exception as e:
                 await DB.log_event("error", "sell_agent_loop_failed", str(e))
             await asyncio.sleep(settings.sell_check_interval_seconds)

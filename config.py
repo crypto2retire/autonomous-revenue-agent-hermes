@@ -13,7 +13,7 @@ class Settings(BaseSettings):
 
     # LLM Provider (DeepSeek)
     llm_provider: str = Field(default="deepseek", description="LLM provider: deepseek or venice")
-    deepseek_api_key: SecretStr = Field(..., description="DeepSeek API key")
+    deepseek_api_key: Optional[SecretStr] = Field(None, description="DeepSeek API key")
     # Current DeepSeek public model name. The old "deepseek-v4-flash" alias returns 404.
     deepseek_model: str = "deepseek-chat"
     deepseek_base_url: str = "https://api.deepseek.com/v1"

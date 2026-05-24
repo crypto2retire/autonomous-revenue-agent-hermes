@@ -24,6 +24,56 @@ async def health():
     return {"status": "ok", "agent": "crypto-trading-agent"}
 
 
+@app.get("/api/status")
+async def get_status():
+    """Return agent health, last price refresh timestamps, and component status."""
+    from datetime import datetime
+    now = datetime.utcnow()
+    
+    # Get latest log events for each component
+    logs = await DB.get_logs(limit=50, hours=1)
+    
+    latest_scan = None
+    latest_price_refresh = None
+    latest_trade = None
+    
+    for log in logs:
+        if latest_scan is None and "scan" in (log.event or "").lower():
+            latest_scan = log.created_at
+        if latest_price_refresh is None and "price" in (log.event or "").lower():
+            latest_price_refresh = log.created_at
+        if latest_trade is None and "trade" in (log.event or "").lower():
+            latest_trade = log.created_at
+    
+    # Count active coins and positions
+    coins = await DB.get_all_coins(limit=1)
+    positions = await DB.get_open_positions()
+    
+    return {
+        "status": "ok",
+        "agent": "crypto-trading-agent",
+        "timestamp": now.isoformat(),
+        "components": {
+            "scanner": {
+                "status": "healthy" if latest_scan is not None and (now - latest_scan).total_seconds() < 300 else "stale",
+                "last_scan": latest_scan.isoformat() if latest_scan is not None else None,
+            },
+            "price_refresh": {
+                "status": "healthy" if latest_price_refresh is not None and (now - latest_price_refresh).total_seconds() < 120 else "stale",
+                "last_refresh": latest_price_refresh.isoformat() if latest_price_refresh is not None else None,
+            },
+            "trading": {
+                "status": "healthy" if latest_trade is not None and (now - latest_trade).total_seconds() < 600 else "idle",
+                "last_trade": latest_trade.isoformat() if latest_trade is not None else None,
+            },
+        },
+        "counts": {
+            "tracked_coins": len(coins) if coins else 0,
+            "open_positions": len(positions),
+        },
+    }
+
+
 # ── Coins / Watchlist ──────────────────────────────────────────────
 
 @app.get("/api/coins")
@@ -104,7 +154,7 @@ async def get_coins(
 
 
 @app.get("/api/coins/gainers")
-async def get_gainers(limit: int = 20, min_gain_pct: float = 100.0):
+async def get_gainers(limit: int = 20, min_gain_pct: float = 5.0):
     coins = await DB.get_successful_coins(min_gain_pct=min_gain_pct, limit=limit)
     return {"coins": [c.to_dict() for c in coins]}
 
@@ -392,6 +442,22 @@ async def dashboard():
             padding: 6px 10px; border-radius: 4px; border: 1px solid #1a2332;
             background: #111827; color: #e0e6ed;
         }
+        .health-bar {
+            display: flex; gap: 15px; align-items: center; margin-bottom: 15px;
+            padding: 10px 15px; background: #111827; border-radius: 8px;
+            border: 1px solid #1a2332; font-size: 0.85rem;
+        }
+        .health-indicator {
+            display: flex; align-items: center; gap: 6px;
+        }
+        .health-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+        }
+        .health-dot.healthy { background: #34d399; }
+        .health-dot.stale { background: #fbbf24; }
+        .health-dot.idle { background: #9ca3af; }
+        .health-label { color: #8892a0; }
+        .health-value { color: #e0e6ed; font-weight: 600; }
         .deployer-info {
             background: #111827; border: 1px solid #1a2332; border-radius: 8px;
             padding: 15px; margin-bottom: 15px;
@@ -431,6 +497,31 @@ async def dashboard():
 <body>
     <div class="container">
         <h1>🤖 Crypto Trading Agent</h1>
+        <div class="health-bar" id="health-bar">
+            <div class="health-indicator">
+                <div class="health-dot idle" id="health-scanner-dot"></div>
+                <span class="health-label">Scanner:</span>
+                <span class="health-value" id="health-scanner">Loading...</span>
+            </div>
+            <div class="health-indicator">
+                <div class="health-dot idle" id="health-price-dot"></div>
+                <span class="health-label">Prices:</span>
+                <span class="health-value" id="health-price">Loading...</span>
+            </div>
+            <div class="health-indicator">
+                <div class="health-dot idle" id="health-trade-dot"></div>
+                <span class="health-label">Trading:</span>
+                <span class="health-value" id="health-trade">Loading...</span>
+            </div>
+            <div class="health-indicator">
+                <span class="health-label">Coins:</span>
+                <span class="health-value" id="health-coins">-</span>
+            </div>
+            <div class="health-indicator">
+                <span class="health-label">Positions:</span>
+                <span class="health-value" id="health-positions">-</span>
+            </div>
+        </div>
         <p class="subtitle">Autonomous scanner, analyzer &amp; executor</p>
 
         <div class="tabs">
@@ -751,40 +842,50 @@ async def dashboard():
             if (signal) url += '&signal=' + signal;
             if (rugged) url += '&is_rugged=' + rugged;
 
-            const res = await fetch(url);
-            const data = await res.json();
+            try {
+                const res = await fetch(url);
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json();
 
-            document.getElementById('watchlist-count').textContent = data.count + ' coins tracked';
+                document.getElementById('watchlist-count').textContent = (data.count || 0) + ' coins tracked';
 
-            const stats = data.stats;
-            document.getElementById('watchlist-stats').innerHTML = `
-                <div class="stat-card"><div class="stat-value">${stats.total_coins || 0}</div><div class="stat-label">Total Coins</div></div>
-                <div class="stat-card"><div class="stat-value">${stats.buy_signals || 0}</div><div class="stat-label">Buy Signals</div></div>
-                <div class="stat-card"><div class="stat-value">${stats.avoid_signals || 0}</div><div class="stat-label">Avoid</div></div>
-                <div class="stat-card"><div class="stat-value">${stats.hold_signals || 0}</div><div class="stat-label">Hold</div></div>
-                <div class="stat-card"><div class="stat-value">${stats.rugged_coins || 0}</div><div class="stat-label">Rugged</div></div>
-                <div class="stat-card"><div class="stat-value">${(stats.avg_confidence || 0).toFixed(0)}%</div><div class="stat-label">Avg Confidence</div></div>
-            `;
+                const stats = data.stats || {};
+                document.getElementById('watchlist-stats').innerHTML = `
+                    <div class="stat-card"><div class="stat-value">${stats.total_coins || 0}</div><div class="stat-label">Total Coins</div></div>
+                    <div class="stat-card"><div class="stat-value">${stats.buy_signals || 0}</div><div class="stat-label">Buy Signals</div></div>
+                    <div class="stat-card"><div class="stat-value">${stats.avoid_signals || 0}</div><div class="stat-label">Avoid</div></div>
+                    <div class="stat-card"><div class="stat-value">${stats.hold_signals || 0}</div><div class="stat-label">Hold</div></div>
+                    <div class="stat-card"><div class="stat-value">${stats.rugged_coins || 0}</div><div class="stat-label">Rugged</div></div>
+                    <div class="stat-card"><div class="stat-value">${(stats.avg_confidence || 0).toFixed(0)}%</div><div class="stat-label">Avg Confidence</div></div>
+                `;
 
-            const tbody = document.getElementById('watchlist-body');
-            tbody.innerHTML = data.coins.map(c => `
-                <tr style="cursor:pointer" onclick="showCoinDetail('${c.token_address}')">
-                    <td><strong>${c.symbol}</strong><br><small style="color:#8892a0">${c.name || ''}</small></td>
-                    <td><span class="badge badge-${c.signal}">${c.signal?.toUpperCase()}</span></td>
-                    <td>${fmtNum(c.last_price_usd || c.first_price_usd, 6)}</td>
-                    <td class="${c.price_change_1m_pct > 0 ? 'positive' : c.price_change_1m_pct < 0 ? 'negative' : ''}">${fmtPct(c.price_change_1m_pct)}</td>
-                    <td class="${c.price_change_5m_pct > 0 ? 'positive' : c.price_change_5m_pct < 0 ? 'negative' : ''}">${fmtPct(c.price_change_5m_pct)}</td>
-                    <td class="${c.price_change_30m_pct > 0 ? 'positive' : c.price_change_30m_pct < 0 ? 'negative' : ''}">${fmtPct(c.price_change_30m_pct)}</td>
-                    <td class="${c.price_change_1h_pct > 0 ? 'positive' : c.price_change_1h_pct < 0 ? 'negative' : ''}">${fmtPct(c.price_change_1h_pct)}</td>
-                    <td>${fmtCompact(c.volume_24h)}</td>
-                    <td>${fmtCompact(c.liquidity_usd)}</td>
-                    <td>${c.holder_count ? c.holder_count.toLocaleString() : '-'}</td>
-                    <td>${((c.confidence || 0) * 100).toFixed(0)}%</td>
-                    <td>${c.scan_count || 0}</td>
-                    <td>${c.deployer_address ? `<a href="#" onclick="event.stopPropagation();showDeployer('${c.deployer_address}');return false">${shortAddr(c.deployer_address)}</a>` : '-'}</td>
-                    <td>${timeAgo(c.last_seen_at)}</td>
-                </tr>
-            `).join('');
+                const tbody = document.getElementById('watchlist-body');
+                if (!data.coins || data.coins.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="14" style="text-align:center;color:#8892a0">No coins found</td></tr>';
+                    return;
+                }
+                tbody.innerHTML = data.coins.map(c => `
+                    <tr style="cursor:pointer" onclick="showCoinDetail('${c.token_address}')">
+                        <td><strong>${c.symbol}</strong><br><small style="color:#8892a0">${c.name || ''}</small></td>
+                        <td><span class="badge badge-${c.signal}">${c.signal?.toUpperCase()}</span></td>
+                        <td>${fmtNum(c.last_price_usd || c.first_price_usd, 6)}</td>
+                        <td class="${c.price_change_1m_pct > 0 ? 'positive' : c.price_change_1m_pct < 0 ? 'negative' : ''}">${fmtPct(c.price_change_1m_pct)}</td>
+                        <td class="${c.price_change_5m_pct > 0 ? 'positive' : c.price_change_5m_pct < 0 ? 'negative' : ''}">${fmtPct(c.price_change_5m_pct)}</td>
+                        <td class="${c.price_change_30m_pct > 0 ? 'positive' : c.price_change_30m_pct < 0 ? 'negative' : ''}">${fmtPct(c.price_change_30m_pct)}</td>
+                        <td class="${c.price_change_1h_pct > 0 ? 'positive' : c.price_change_1h_pct < 0 ? 'negative' : ''}">${fmtPct(c.price_change_1h_pct)}</td>
+                        <td>${fmtCompact(c.volume_24h)}</td>
+                        <td>${fmtCompact(c.liquidity_usd)}</td>
+                        <td>${c.holder_count ? c.holder_count.toLocaleString() : '-'}</td>
+                        <td>${((c.confidence || 0) * 100).toFixed(0)}%</td>
+                        <td>${c.scan_count || 0}</td>
+                        <td>${c.deployer_address ? `<a href="#" onclick="event.stopPropagation();showDeployer('${c.deployer_address}');return false">${shortAddr(c.deployer_address)}</a>` : '-'}</td>
+                        <td>${timeAgo(c.last_seen_at)}</td>
+                    </tr>
+                `).join('');
+            } catch (e) {
+                console.error('Watchlist load failed:', e);
+                document.getElementById('watchlist-body').innerHTML = `<tr><td colspan="14" style="text-align:center;color:#f87171">Error loading watchlist: ${e.message}</td></tr>`;
+            }
         }
 
         async function showCoinDetail(tokenAddress) {
@@ -911,7 +1012,7 @@ async def dashboard():
                 new Chart(ctx, {
                     type: 'line',
                     data: {
-                        labels: history.map(h => new Date(h.created_at).toLocaleDateString()),
+                        labels: history.map(h => new Date(h.created_at).toLocaleTimeString()),
                         datasets: [{
                             label: 'Price (USD)',
                             data: history.map(h => h.price_usd),
@@ -1202,8 +1303,34 @@ async def dashboard():
             }
         }
 
+        async function loadHealthBar() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                
+                const scannerStatus = data.components?.scanner?.status || 'idle';
+                const priceStatus = data.components?.price_refresh?.status || 'idle';
+                const tradeStatus = data.components?.trading?.status || 'idle';
+                
+                document.getElementById('health-scanner').textContent = scannerStatus;
+                document.getElementById('health-scanner-dot').className = 'health-dot ' + scannerStatus;
+                
+                document.getElementById('health-price').textContent = priceStatus;
+                document.getElementById('health-price-dot').className = 'health-dot ' + priceStatus;
+                
+                document.getElementById('health-trade').textContent = tradeStatus;
+                document.getElementById('health-trade-dot').className = 'health-dot ' + tradeStatus;
+                
+                document.getElementById('health-coins').textContent = data.counts?.tracked_coins || 0;
+                document.getElementById('health-positions').textContent = data.counts?.open_positions || 0;
+            } catch (e) {
+                console.error('Health bar fetch failed:', e);
+            }
+        }
+
         // Auto-refresh all visible panels every 30s
         function refreshActivePanel() {
+            loadHealthBar();
             const panels = document.querySelectorAll('.panel.active');
             panels.forEach(panel => {
                 const id = panel.id;
@@ -1219,6 +1346,7 @@ async def dashboard():
         }
 
         // Initial load
+        loadHealthBar();
         loadWatchlist();
         loadSettings();
         loadPositions();

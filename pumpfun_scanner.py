@@ -140,6 +140,33 @@ class PumpFunScanner:
 
     # ── Launch detection ──────────────────────────────────────────────
 
+    async def get_solana_deployer(self, token_address: str) -> Optional[str]:
+        """Fetch the deployer/creator address for a Solana token via Helius RPC."""
+        try:
+            result = await self._helius_rpc(
+                "getAccountInfo",
+                [token_address, {"encoding": "jsonParsed"}],
+            )
+            parsed = result.get("value", {}).get("data", {}).get("parsed", {})
+            info = parsed.get("info", {})
+            # SPL token mint authority is the deployer
+            mint_authority = info.get("mintAuthority")
+            if mint_authority:
+                return str(mint_authority)
+            # Fallback: check metadata account
+            meta_result = await self._helius_rpc(
+                "getAccountInfo",
+                [token_address, {"encoding": "jsonParsed"}],
+            )
+            meta_parsed = meta_result.get("value", {}).get("data", {}).get("parsed", {})
+            meta_info = meta_parsed.get("info", {})
+            update_authority = meta_info.get("updateAuthority")
+            if update_authority:
+                return str(update_authority)
+        except Exception as e:
+            await DB.log_event("warning", "solana_deployer_fetch_failed", f"{token_address}: {e}")
+        return None
+
     async def detect_new_launches(self, limit: int = 30) -> List[Dict[str, Any]]:
         """Detect new pump.fun token launches via DexScreener PumpSwap pairs."""
         # Get latest PumpSwap pairs
@@ -169,6 +196,9 @@ class PumpFunScanner:
 
             self._seen_mints.add(token_address)
 
+            # Fetch deployer for Solana tokens
+            deployer_address = await self.get_solana_deployer(token_address)
+
             launch = {
                 "tokenAddress": token_address,
                 "symbol": base_token.get("symbol", "UNKNOWN"),
@@ -181,6 +211,7 @@ class PumpFunScanner:
                 "priceChange": {"h24": float(pair.get("priceChange", {}).get("h24", 0) or 0)},
                 "source": "pumpfun_launch",
                 "launch_time": datetime.utcnow().isoformat(),
+                "deployer_address": deployer_address,
             }
             launches.append(launch)
 
@@ -353,7 +384,7 @@ class PumpFunScanner:
                     price_at_discovery=launch.get("priceUsd", 0),
                     ai_score=analysis["confidence"],
                     signal=analysis["signal"],
-                    deployer_address=None,
+                    deployer_address=launch.get("deployer_address"),
                     discovery_source="pumpfun_launch",
                     chain="solana",
                     extra_data={
@@ -372,6 +403,8 @@ class PumpFunScanner:
                     liquidity_usd=launch.get("liquidity", {}).get("usd"),
                     market_cap=launch.get("marketCap") or 0,
                 )
+                if launch.get("deployer_address"):
+                    await DB.update_deployer_stats(launch["deployer_address"])
 
             # Execute buy on strong signals
             if analysis["signal"] == "buy" and analysis["confidence"] >= 0.75:
