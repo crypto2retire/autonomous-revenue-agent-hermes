@@ -23,9 +23,9 @@ class Settings(BaseSettings):
     venice_model: str = "claude-opus-4.6"
     venice_base_url: str = "https://api.venice.ai/api/v1"
 
-    # Base Chain
-    base_wallet_private_key: SecretStr = Field(..., description="Base chain private key")
-    base_wallet_address: str = Field(..., description="Base chain wallet address")
+    # Base Chain (optional - only needed if trading on Base)
+    base_wallet_private_key: Optional[SecretStr] = Field(None, description="Base chain private key")
+    base_wallet_address: Optional[str] = Field(None, description="Base chain wallet address")
     base_rpc: str = "https://mainnet.base.org"
 
     # Solana Chain
