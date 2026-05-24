@@ -113,7 +113,8 @@ databases:
   - name: agent-db
     databaseName: agent_db
     user: agent_user
-    plan: basic-512mb
+    plan: basic-256mb
+    diskSizeGB: 5
     region: oregon
     postgresMajorVersion: "16"
     ipAllowList: []
