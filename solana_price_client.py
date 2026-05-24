@@ -22,6 +22,30 @@ class SolanaPriceClient:
         self._price_cache: Dict[str, Dict[str, Any]] = {}
         self._cache_ttl = 30  # Cache prices for 30 seconds
         self._last_update: Dict[str, float] = {}
+        # Birdeye rate limit tracking
+        self._birdeye_calls_today = 0
+        self._birdeye_last_reset = None
+        self._birdeye_limit = 30000  # Free tier: 30K CUs/month
+        self._birdeye_daily_estimate = 1000  # ~1K calls/day average
+
+    def _reset_birdeye_counter_if_needed(self):
+        """Reset daily Birdeye call counter at UTC midnight."""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).date()
+        if self._birdeye_last_reset != now:
+            self._birdeye_calls_today = 0
+            self._birdeye_last_reset = now
+
+    def get_birdeye_usage(self) -> Dict[str, Any]:
+        """Get current Birdeye API usage stats."""
+        self._reset_birdeye_counter_if_needed()
+        return {
+            "calls_today": self._birdeye_calls_today,
+            "daily_limit_estimate": self._birdeye_daily_estimate,
+            "monthly_limit": self._birdeye_limit,
+            "remaining_today": max(0, self._birdeye_daily_estimate - self._birdeye_calls_today),
+            "pct_used_today": (self._birdeye_calls_today / self._birdeye_daily_estimate * 100) if self._birdeye_daily_estimate > 0 else 0,
+        }
 
     async def close(self):
         await self.http.aclose()
@@ -83,6 +107,15 @@ class SolanaPriceClient:
         if not settings.birdeye_api_key:
             return None
 
+        # Check rate limit before calling
+        self._reset_birdeye_counter_if_needed()
+        if self._birdeye_calls_today >= self._birdeye_daily_estimate:
+            logger.warning(
+                f"Birdeye daily limit reached ({self._birdeye_calls_today}/{self._birdeye_daily_estimate}). "
+                f"Skipping Birdeye for {token_address[:8]}..."
+            )
+            return None
+
         url = f"https://public-api.birdeye.so/defi/price?address={token_address}"
         headers = {
             "X-API-KEY": settings.birdeye_api_key.get_secret_value(),
@@ -90,6 +123,13 @@ class SolanaPriceClient:
         }
 
         resp = await self.http.get(url, headers=headers)
+        self._birdeye_calls_today += 1
+        usage = self.get_birdeye_usage()
+        logger.info(
+            f"Birdeye call #{self._birdeye_calls_today} today "
+            f"({usage['pct_used_today']:.1f}% of daily estimate). "
+            f"Remaining: {usage['remaining_today']}"
+        )
         resp.raise_for_status()
         data = resp.json()
 
