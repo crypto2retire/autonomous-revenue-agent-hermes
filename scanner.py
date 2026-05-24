@@ -33,6 +33,11 @@ class Scanner:
         self.dune = get_dune()
         self.basescan = get_basescan()
         self.executor = Executor()
+        # Rate limiters to prevent 429 errors
+        self._dexscreener_last_call = 0
+        self._dexscreener_min_interval = 1.1  # 1.1s between DexScreener calls (free tier ~60/min)
+        self._solana_rpc_last_call = 0
+        self._solana_rpc_min_interval = 1.1  # 1.1s between Solana RPC calls
 
     async def close(self):
         await self.http.aclose()
@@ -41,12 +46,29 @@ class Scanner:
         await self.basescan.close()
         await self.executor.close()
 
+    async def _dexscreener_rate_limit(self):
+        """Enforce minimum interval between DexScreener API calls."""
+        now = asyncio.get_event_loop().time()
+        elapsed = now - self._dexscreener_last_call
+        if elapsed < self._dexscreener_min_interval:
+            await asyncio.sleep(self._dexscreener_min_interval - elapsed)
+        self._dexscreener_last_call = asyncio.get_event_loop().time()
+
+    async def _solana_rpc_rate_limit(self):
+        """Enforce minimum interval between Solana RPC calls."""
+        now = asyncio.get_event_loop().time()
+        elapsed = now - self._solana_rpc_last_call
+        if elapsed < self._solana_rpc_min_interval:
+            await asyncio.sleep(self._solana_rpc_min_interval - elapsed)
+        self._solana_rpc_last_call = asyncio.get_event_loop().time()
+
     # ── DexScreener API ──────────────────────────────────────────────
 
     async def get_trending_profiles(self, chain: str = "base") -> List[Dict[str, Any]]:
         """Get trending token profiles on a chain."""
         url = f"{DEXSCREENER_BASE}/token-profiles/latest/v1"
         try:
+            await self._dexscreener_rate_limit()
             resp = await self.http.get(url)
             resp.raise_for_status()
             data = resp.json()
@@ -62,6 +84,7 @@ class Scanner:
         """Get latest created pairs on a chain via search."""
         url = f"{DEXSCREENER_BASE}/latest/dex/search"
         try:
+            await self._dexscreener_rate_limit()
             resp = await self.http.get(url, params={"q": f"{chain} USDC"})
             resp.raise_for_status()
             data = resp.json()
@@ -78,6 +101,7 @@ class Scanner:
         """Get top pairs by volume on a chain via search."""
         url = f"{DEXSCREENER_BASE}/latest/dex/search"
         try:
+            await self._dexscreener_rate_limit()
             resp = await self.http.get(url, params={"q": f"{chain} WETH"})
             resp.raise_for_status()
             data = resp.json()
@@ -96,6 +120,7 @@ class Scanner:
         """Search for pairs by token symbol/name."""
         url = f"{DEXSCREENER_BASE}/latest/dex/search"
         try:
+            await self._dexscreener_rate_limit()
             resp = await self.http.get(url, params={"q": query})
             resp.raise_for_status()
             data = resp.json()
@@ -112,6 +137,7 @@ class Scanner:
         """Get pair data for a specific token — includes symbol, name, price, volume."""
         url = f"{DEXSCREENER_BASE}/token-pairs/v1/{chain}/{token_address}"
         try:
+            await self._dexscreener_rate_limit()
             resp = await self.http.get(url)
             resp.raise_for_status()
             return resp.json()
@@ -730,7 +756,7 @@ Respond ONLY with valid JSON."""
         if live_requested and not settings.is_live:
             await DB.log_event("warning", "live_trading_env_guard", "Dashboard requested live trading, but AGENT_MODE is paper; executing paper trade only")
 
-        amount_usd = max(settings.min_trade_size_usd, min(settings.max_trade_size_usd, settings.default_trade_size_usd))
+        amount_usd = max(settings.min_trade_size_usd, min(settings.max_trade_size_usd, settings.min_trade_size_usd))
         trade_id = await self.executor.execute_buy(
             token_address=address,
             symbol=token.get("symbol", "UNKNOWN"),

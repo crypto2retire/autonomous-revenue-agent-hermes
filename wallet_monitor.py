@@ -31,9 +31,30 @@ class WalletMonitor:
         self._cache: Dict[str, Any] = {}
         self._cache_time: Optional[datetime] = None
         self._cache_ttl_seconds = 15
+        # Rate limiters to prevent 429 errors
+        self._solana_rpc_last_call = 0
+        self._solana_rpc_min_interval = 1.1  # 1.1s between Solana RPC calls
+        self._jupiter_last_call = 0
+        self._jupiter_min_interval = 2.0  # 2s between Jupiter API calls
 
     async def close(self):
         await self.http.aclose()
+
+    async def _solana_rpc_rate_limit(self):
+        """Enforce minimum interval between Solana RPC calls."""
+        now = asyncio.get_event_loop().time()
+        elapsed = now - self._solana_rpc_last_call
+        if elapsed < self._solana_rpc_min_interval:
+            await asyncio.sleep(self._solana_rpc_min_interval - elapsed)
+        self._solana_rpc_last_call = asyncio.get_event_loop().time()
+
+    async def _jupiter_rate_limit(self):
+        """Enforce minimum interval between Jupiter API calls."""
+        now = asyncio.get_event_loop().time()
+        elapsed = now - self._jupiter_last_call
+        if elapsed < self._jupiter_min_interval:
+            await asyncio.sleep(self._jupiter_min_interval - elapsed)
+        self._jupiter_last_call = asyncio.get_event_loop().time()
 
     # ── Solana Balance ───────────────────────────────────────────────
 
@@ -44,6 +65,7 @@ class WalletMonitor:
 
         try:
             # Get SOL balance via RPC
+            await self._solana_rpc_rate_limit()
             payload = {
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -61,6 +83,7 @@ class WalletMonitor:
             sol_value_usd = sol_balance * sol_price
 
             # Get token accounts
+            await self._solana_rpc_rate_limit()
             token_payload = {
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -96,6 +119,7 @@ class WalletMonitor:
     async def _get_sol_price(self) -> float:
         """Get SOL price in USD."""
         try:
+            await self._jupiter_rate_limit()
             url = "https://api.jup.ag/price/v2"
             params = {"ids": "So11111111111111111111111111111111111111112", "vsToken": "USDC"}
             resp = await self.http.get(url, params=params)

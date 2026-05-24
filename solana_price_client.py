@@ -27,6 +27,12 @@ class SolanaPriceClient:
         self._birdeye_last_reset = None
         self._birdeye_limit = 30000  # Free tier: 30K CUs/month
         self._birdeye_daily_estimate = 1000  # ~1K calls/day average
+        # DexScreener rate limit tracking
+        self._dexscreener_last_call = 0
+        self._dexscreener_min_interval = 1.1  # 1.1s between DexScreener calls (free tier ~60/min)
+        # Jupiter rate limit tracking
+        self._jupiter_last_call = 0
+        self._jupiter_min_interval = 2.0  # 2s between Jupiter calls
 
     def _reset_birdeye_counter_if_needed(self):
         """Reset daily Birdeye call counter at UTC midnight."""
@@ -139,6 +145,13 @@ class SolanaPriceClient:
 
     async def _fetch_jupiter(self, token_address: str, vs_token: str) -> Optional[float]:
         """Fetch price from Jupiter Price API v3."""
+        # Enforce rate limit
+        now = asyncio.get_event_loop().time()
+        elapsed = now - self._jupiter_last_call
+        if elapsed < self._jupiter_min_interval:
+            await asyncio.sleep(self._jupiter_min_interval - elapsed)
+        self._jupiter_last_call = asyncio.get_event_loop().time()
+
         url = "https://api.jup.ag/price/v3"
         params = {
             "ids": token_address,
@@ -158,6 +171,13 @@ class SolanaPriceClient:
 
     async def _fetch_dexscreener(self, token_address: str) -> Optional[float]:
         """Fetch price from DexScreener API."""
+        # Enforce rate limit
+        now = asyncio.get_event_loop().time()
+        elapsed = now - self._dexscreener_last_call
+        if elapsed < self._dexscreener_min_interval:
+            await asyncio.sleep(self._dexscreener_min_interval - elapsed)
+        self._dexscreener_last_call = asyncio.get_event_loop().time()
+
         url = f"https://api.dexscreener.com/tokens/v1/solana/{token_address}"
 
         resp = await self.http.get(url, timeout=10.0)

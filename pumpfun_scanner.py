@@ -33,15 +33,37 @@ class PumpFunScanner:
         self.running = False
         self._seen_mints: set = set()  # In-memory dedup; DB handles persistence
         self.scanner = Scanner()  # Reuse for analysis + trade execution
+        # Rate limiters to prevent 429 errors
+        self._dexscreener_last_call = 0
+        self._dexscreener_min_interval = 1.1  # 1.1s between DexScreener calls (free tier ~60/min)
+        self._helius_last_call = 0
+        self._helius_min_interval = 1.1  # 1.1s between Helius RPC calls
 
     async def close(self):
         await self.http.aclose()
         await self.scanner.close()
 
+    async def _dexscreener_rate_limit(self):
+        """Enforce minimum interval between DexScreener API calls."""
+        now = asyncio.get_event_loop().time()
+        elapsed = now - self._dexscreener_last_call
+        if elapsed < self._dexscreener_min_interval:
+            await asyncio.sleep(self._dexscreener_min_interval - elapsed)
+        self._dexscreener_last_call = asyncio.get_event_loop().time()
+
+    async def _helius_rate_limit(self):
+        """Enforce minimum interval between Helius RPC calls."""
+        now = asyncio.get_event_loop().time()
+        elapsed = now - self._helius_last_call
+        if elapsed < self._helius_min_interval:
+            await asyncio.sleep(self._helius_min_interval - elapsed)
+        self._helius_last_call = asyncio.get_event_loop().time()
+
     # ── Helius RPC ────────────────────────────────────────────────────
 
     async def _helius_rpc(self, method: str, params: list) -> dict:
         """Call Helius RPC with the user's API key."""
+        await self._helius_rate_limit()
         key = settings.helius_api_key.get_secret_value() if settings.helius_api_key else ""
         url = f"{HELIUS_API}/?api-key={key}"
         payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
@@ -80,6 +102,7 @@ class PumpFunScanner:
         """Get latest PumpSwap pairs from DexScreener (pump.fun's DEX)."""
         url = f"{DEXSCREENER_BASE}/latest/dex/search"
         try:
+            await self._dexscreener_rate_limit()
             resp = await self.http.get(url, params={"q": "pumpswap"})
             resp.raise_for_status()
             data = resp.json()
@@ -99,6 +122,7 @@ class PumpFunScanner:
         """Get pair data for a Solana token from DexScreener."""
         url = f"{DEXSCREENER_BASE}/token-pairs/v1/solana/{token_address}"
         try:
+            await self._dexscreener_rate_limit()
             resp = await self.http.get(url)
             resp.raise_for_status()
             return resp.json()
