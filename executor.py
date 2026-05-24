@@ -48,6 +48,9 @@ class Executor:
         # Rate limit tracking for Odos
         self._odos_last_call = 0
         self._odos_min_interval = 1.1  # 1.1s — free tier is 1 RPS, stay slightly under
+        # Rate limit tracking for Jupiter
+        self._jupiter_last_call = 0
+        self._jupiter_min_interval = 2.0  # 2s between Jupiter API calls to avoid 429
 
     def _odos_headers(self) -> Dict[str, str]:
         """Build Odos request headers. Include API key if configured."""
@@ -141,7 +144,14 @@ class Executor:
         output_mint: str,
         amount: int,
     ) -> dict:
-        """Get Jupiter swap quote."""
+        """Get Jupiter swap quote with rate limiting."""
+        # Enforce rate limit
+        now = asyncio.get_event_loop().time()
+        elapsed = now - self._jupiter_last_call
+        if elapsed < self._jupiter_min_interval:
+            await asyncio.sleep(self._jupiter_min_interval - elapsed)
+        self._jupiter_last_call = asyncio.get_event_loop().time()
+        
         return await self.jupiter.get_quote(input_mint, output_mint, amount)
 
     async def get_jupiter_swap_tx(
@@ -149,7 +159,14 @@ class Executor:
         quote_response: dict,
         user_public_key: str,
     ) -> dict:
-        """Get serialized Jupiter swap transaction."""
+        """Get serialized Jupiter swap transaction with rate limiting."""
+        # Enforce rate limit
+        now = asyncio.get_event_loop().time()
+        elapsed = now - self._jupiter_last_call
+        if elapsed < self._jupiter_min_interval:
+            await asyncio.sleep(self._jupiter_min_interval - elapsed)
+        self._jupiter_last_call = asyncio.get_event_loop().time()
+        
         return await self.jupiter.get_swap_transaction(quote_response, user_public_key)
 
     # ── Trade Execution ──────────────────────────────────────────────
