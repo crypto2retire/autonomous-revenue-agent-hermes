@@ -564,25 +564,108 @@ class DB:
             return result.scalars().all()
 
     @staticmethod
-    async def get_trade_stats() -> dict:
-        """Get trade statistics."""
+    async def get_open_positions() -> List[Dict[str, Any]]:
+        """Get all open positions with current PNL."""
         async with async_session() as session:
-            total_trades = await session.scalar(select(func.count(Trade.id)))
-            buy_trades = await session.scalar(
-                select(func.count(Trade.id)).where(Trade.side == "buy")
+            result = await session.execute(
+                select(Trade)
+                .where(Trade.status == "executed")
+                .where(Trade.side == "buy")
+                .order_by(desc(Trade.executed_at))
             )
-            sell_trades = await session.scalar(
-                select(func.count(Trade.id)).where(Trade.side == "sell")
-            )
-            total_volume = await session.scalar(
-                select(func.sum(Trade.amount_usd))
-            ) or 0.0
+            trades = result.scalars().all()
+            
+            positions = []
+            for trade in trades:
+                # Get current coin price
+                coin_result = await session.execute(
+                    select(CoinWatch).where(CoinWatch.token_address == trade.token_address)
+                )
+                coin = coin_result.scalar_one_or_none()
+                
+                current_price = float(coin.last_price_usd) if coin and coin.last_price_usd else 0
+                entry_price = float(trade.entry_price) if trade.entry_price else 0
+                amount_usd = float(trade.amount_usd) if trade.amount_usd else 0
+                
+                # Calculate PNL
+                if entry_price > 0 and current_price > 0:
+                    pnl_pct = ((current_price - entry_price) / entry_price) * 100
+                    pnl_usd = amount_usd * (pnl_pct / 100)
+                else:
+                    pnl_pct = 0
+                    pnl_usd = 0
+                
+                positions.append({
+                    "trade_id": trade.trade_id,
+                    "symbol": trade.symbol,
+                    "token_address": trade.token_address,
+                    "chain": trade.chain,
+                    "amount_usd": amount_usd,
+                    "entry_price": entry_price,
+                    "current_price": current_price,
+                    "pnl_usd": pnl_usd,
+                    "pnl_pct": pnl_pct,
+                    "executed_at": trade.executed_at.isoformat() if trade.executed_at else None,
+                    "tx_hash": trade.tx_hash,
+                })
+            
+            return positions
 
+    @staticmethod
+    async def get_portfolio_summary() -> Dict[str, Any]:
+        """Get portfolio summary with total PNL."""
+        async with async_session() as session:
+            # Get all executed buy trades
+            result = await session.execute(
+                select(Trade)
+                .where(Trade.status == "executed")
+                .where(Trade.side == "buy")
+            )
+            trades = result.scalars().all()
+            
+            total_invested = 0
+            total_current_value = 0
+            positions = []
+            
+            for trade in trades:
+                coin_result = await session.execute(
+                    select(CoinWatch).where(CoinWatch.token_address == trade.token_address)
+                )
+                coin = coin_result.scalar_one_or_none()
+                
+                current_price = float(coin.last_price_usd) if coin and coin.last_price_usd else 0
+                entry_price = float(trade.entry_price) if trade.entry_price else 0
+                amount_usd = float(trade.amount_usd) if trade.amount_usd else 0
+                
+                if entry_price > 0 and current_price > 0:
+                    pnl_pct = ((current_price - entry_price) / entry_price) * 100
+                    pnl_usd = amount_usd * (pnl_pct / 100)
+                    current_value = amount_usd + pnl_usd
+                else:
+                    pnl_pct = 0
+                    pnl_usd = 0
+                    current_value = amount_usd
+                
+                total_invested += amount_usd
+                total_current_value += current_value
+                
+                positions.append({
+                    "symbol": trade.symbol,
+                    "amount_usd": amount_usd,
+                    "pnl_usd": pnl_usd,
+                    "pnl_pct": pnl_pct,
+                })
+            
+            total_pnl_usd = total_current_value - total_invested
+            total_pnl_pct = ((total_current_value - total_invested) / total_invested * 100) if total_invested > 0 else 0
+            
             return {
-                "total_trades": total_trades,
-                "buy_trades": buy_trades,
-                "sell_trades": sell_trades,
-                "total_volume": float(total_volume),
+                "total_invested": total_invested,
+                "total_current_value": total_current_value,
+                "total_pnl_usd": total_pnl_usd,
+                "total_pnl_pct": total_pnl_pct,
+                "position_count": len(positions),
+                "positions": positions,
             }
 
     # --- Wallet Snapshots ---

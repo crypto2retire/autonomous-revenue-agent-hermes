@@ -200,6 +200,24 @@ async def get_trades(status: Optional[str] = None, chain: Optional[str] = None, 
     return {"trades": [t.to_dict() for t in trades], "count": len(trades)}
 
 
+@app.get("/api/positions")
+async def get_positions():
+    """Get all open positions with current PNL."""
+    positions = await DB.get_open_positions()
+    summary = await DB.get_portfolio_summary()
+    return {
+        "positions": positions,
+        "summary": summary,
+    }
+
+
+@app.get("/api/portfolio")
+async def get_portfolio():
+    """Get portfolio summary with total PNL."""
+    summary = await DB.get_portfolio_summary()
+    return {"summary": summary}
+
+
 # ── Performance ────────────────────────────────────────────────────
 
 @app.get("/api/performance")
