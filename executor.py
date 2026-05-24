@@ -198,6 +198,18 @@ class Executor:
         )
 
         try:
+            # Get actual token price at time of purchase for proper PNL tracking
+            price_client = await get_solana_price_client()
+            actual_token_price = await price_client.get_price(token_address, vs_token="USDC")
+            if actual_token_price is None or actual_token_price <= 0:
+                actual_token_price = amount_usd  # Fallback to amount if price fetch fails
+            
+            # Update coin price in database so position manager can find it
+            await DB.update_coin_market_data(
+                token_address=token_address,
+                price_usd=actual_token_price,
+            )
+
             if settings.is_paper:
                 # Paper trade: simulate without real execution
                 await asyncio.sleep(0.5)
@@ -205,14 +217,14 @@ class Executor:
                     trade_id=trade_id,
                     status=TradeStatus.EXECUTED,
                     executed_at=datetime.utcnow(),
-                    entry_price=amount_usd,
+                    entry_price=actual_token_price,
                     tx_hash=f"PAPER-{uuid.uuid4().hex[:16]}",
                 )
                 await DB.log_event(
                     "info", "paper_trade_executed",
-                    f"Paper buy {symbol} ({chain}) for ${amount_usd}",
+                    f"Paper buy {symbol} ({chain}) for ${amount_usd} at ${actual_token_price:.8f}/token",
                     {"token_address": token_address, "symbol": symbol, "chain": chain,
-                     "trade_id": trade_id, "amount_usd": amount_usd},
+                     "trade_id": trade_id, "amount_usd": amount_usd, "entry_price": actual_token_price},
                 )
             else:
                 # Live trade
@@ -314,17 +326,30 @@ class Executor:
         # Confirm
         await self.solana.confirm_transaction(signature, timeout_sec=60)
 
+        # Get actual token price at time of purchase for proper PNL tracking
+        price_client = await get_solana_price_client()
+        actual_token_price = await price_client.get_price(token_address, vs_token="USDC")
+        if actual_token_price is None or actual_token_price <= 0:
+            actual_token_price = amount_usd  # Fallback to amount if price fetch fails
+        
+        # Update coin price in database so position manager can find it
+        await DB.update_coin_market_data(
+            token_address=token_address,
+            price_usd=actual_token_price,
+        )
+
         await DB.update_trade(
             trade_id=trade_id,
             status=TradeStatus.EXECUTED,
             executed_at=datetime.utcnow(),
+            entry_price=actual_token_price,
             tx_hash=signature,
         )
         await DB.log_event(
             "info", "live_trade_executed",
-            f"Live buy {symbol} (Solana) for ${amount_usd}",
+            f"Live buy {symbol} (Solana) for ${amount_usd} at ${actual_token_price:.8f}/token",
             {"token_address": token_address, "symbol": symbol, "chain": "solana",
-             "trade_id": trade_id, "tx_hash": signature},
+             "trade_id": trade_id, "tx_hash": signature, "entry_price": actual_token_price},
         )
 
     async def execute_sell(

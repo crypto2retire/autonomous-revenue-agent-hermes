@@ -12,6 +12,7 @@ from config import get_settings
 from database import DB
 from executor import Executor
 from models import TradeStatus, SellReason
+from solana_price_client import get_solana_price_client
 
 settings = get_settings()
 
@@ -24,28 +25,61 @@ class PositionManager:
         self.running = False
         self.sell_count_today = 0
         self.last_reset = datetime.utcnow().date()
+        self._price_client = None
+
+    async def _get_price_client(self):
+        """Lazy init the Solana price client."""
+        if self._price_client is None:
+            self._price_client = await get_solana_price_client()
+        return self._price_client
 
     async def close(self):
         await self.executor.close()
+        if self._price_client:
+            await self._price_client.close()
 
     # ── Price Fetching ───────────────────────────────────────────────
 
     async def _get_current_price(self, token_address: str, chain: str) -> float:
-        """Get current token price from CoinWatch or Jupiter."""
+        """Get current token price using SolanaPriceClient with Birdeye priority."""
+        # First check CoinWatch cache
         coin = await DB.get_coin(token_address)
         if coin and coin.last_price_usd is not None:
-            return float(coin.last_price_usd)
-        # Fallback: try Jupiter for Solana
+            cached_price = float(coin.last_price_usd)
+            if cached_price > 0:
+                return cached_price
+        
+        # Fallback: use SolanaPriceClient (Birdeye → Jupiter → DexScreener → CoinGecko)
         if chain.lower() == "solana":
-            from jupiter_client import get_jupiter
-            jup = get_jupiter()
             try:
-                price = await jup.get_price(token_address, "USDC")
-                if price:
+                price_client = await self._get_price_client()
+                price = await price_client.get_price(token_address, "USDC")
+                if price and price > 0:
+                    # Update cache for next time
+                    await DB.update_coin_market_data(token_address, price_usd=price)
                     return price
-            except Exception:
-                pass
+            except Exception as e:
+                await DB.log_event("warning", "price_fetch_failed", f"Failed to fetch price for {token_address}: {e}")
+        
         return 0.0
+
+    async def _refresh_all_position_prices(self):
+        """Background task: refresh prices for all open positions."""
+        try:
+            positions = await DB.get_open_positions()
+            for pos in positions:
+                token_address = pos.get("token_address")
+                chain = pos.get("chain", "solana")
+                if token_address:
+                    try:
+                        price = await self._get_current_price(token_address, chain)
+                        if price > 0:
+                            await DB.update_coin_market_data(token_address, price_usd=price)
+                    except Exception as e:
+                        await DB.log_event("warning", "price_refresh_failed", 
+                            f"Failed to refresh price for {pos.get('symbol', 'UNKNOWN')}: {e}")
+        except Exception as e:
+            await DB.log_event("error", "price_refresh_loop_failed", str(e))
 
     # ── Position Evaluation ──────────────────────────────────────────
 
@@ -284,12 +318,19 @@ class PositionManager:
             )
 
     async def run(self):
-        """Background sell agent loop."""
+        """Background sell agent loop with price refresh."""
         self.running = True
-        await DB.log_event("info", "sell_agent_started", "Sell agent (position manager) started")
+        await DB.log_event("info", "sell_agent_started", "Sell agent (position manager) started with price refresh")
 
+        price_refresh_counter = 0
         while self.running:
             try:
+                # Refresh prices every 5 cycles (every ~2.5 minutes with 30s interval)
+                price_refresh_counter += 1
+                if price_refresh_counter >= 5:
+                    await self._refresh_all_position_prices()
+                    price_refresh_counter = 0
+                
                 await self.check_all_positions()
             except Exception as e:
                 await DB.log_event("error", "sell_agent_loop_failed", str(e))
