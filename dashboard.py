@@ -423,6 +423,7 @@ async def dashboard():
             <div class="tab" onclick="showTab('market')">📈 Market</div>
             <div class="tab" onclick="showTab('deployers')">👤 Deployers</div>
             <div class="tab" onclick="showTab('trades')">💰 Trades</div>
+            <div class="tab" onclick="showTab('positions')">📈 Positions</div>
             <div class="tab" onclick="showTab('performance')">📊 Performance</div>
             <div class="tab" onclick="showTab('logs')">📝 Logs</div>
             <div class="tab" onclick="showTab('settings')">⚙️ Settings</div>
@@ -591,6 +592,30 @@ async def dashboard():
             <div class="stats-grid" id="performance-stats"></div>
         </div>
 
+        <!-- Positions Panel -->
+        <div class="panel" id="positions-panel">
+            <div class="refresh-bar">
+                <span id="positions-count">Loading...</span>
+                <button class="btn" onclick="loadPositions()">Refresh</button>
+            </div>
+            <div class="stats-grid" id="positions-stats"></div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Amount</th>
+                        <th>Entry Price</th>
+                        <th>Current Price</th>
+                        <th>PNL ($)</th>
+                        <th>PNL %</th>
+                        <th>Entry Time</th>
+                        <th>TX</th>
+                    </tr>
+                </thead>
+                <tbody id="positions-body"></tbody>
+            </table>
+        </div>
+
         <!-- Logs Panel -->
         <div class="panel" id="logs-panel">
             <div class="refresh-bar">
@@ -660,6 +685,7 @@ async def dashboard():
             if (name === 'market') loadMarket();
             if (name === 'deployers') loadDeployers();
             if (name === 'trades') loadTrades();
+            if (name === 'positions') loadPositions();
             if (name === 'performance') loadPerformance();
             if (name === 'logs') loadLogs();
             if (name === 'settings') loadSettings();
@@ -1037,6 +1063,45 @@ async def dashboard():
             `;
         }
 
+        async function loadPositions() {
+            const res = await fetch('/api/positions');
+            const data = await res.json();
+            const positions = data.positions || [];
+            const summary = data.summary || {};
+            
+            document.getElementById('positions-count').textContent = `${positions.length} open positions`;
+            
+            // Portfolio summary stats
+            const totalPnl = summary.total_pnl_usd || 0;
+            const totalPnlPct = summary.total_pnl_pct || 0;
+            const pnlColor = totalPnl >= 0 ? '#34d399' : '#f87171';
+            
+            document.getElementById('positions-stats').innerHTML = `
+                <div class="stat-card"><div class="stat-value">$${fmtNum(summary.total_invested || 0)}</div><div class="stat-label">Total Invested</div></div>
+                <div class="stat-card"><div class="stat-value">$${fmtNum(summary.total_current_value || 0)}</div><div class="stat-label">Current Value</div></div>
+                <div class="stat-card"><div class="stat-value" style="color: ${pnlColor}">$${fmtNum(totalPnl)}</div><div class="stat-label">Total PNL</div></div>
+                <div class="stat-card"><div class="stat-value" style="color: ${pnlColor}">${fmtPct(totalPnlPct)}</div><div class="stat-label">PNL %</div></div>
+                <div class="stat-card"><div class="stat-value">${summary.position_count || 0}</div><div class="stat-label">Positions</div></div>
+            `;
+            
+            document.getElementById('positions-body').innerHTML = positions.map(p => {
+                const pnlColor = p.pnl_usd >= 0 ? 'positive' : 'negative';
+                const txLink = p.tx_hash ? `<a href="https://solscan.io/tx/${p.tx_hash}" target="_blank" style="color: #00d4aa;">View</a>` : '-';
+                return `
+                    <tr>
+                        <td><strong>${p.symbol}</strong></td>
+                        <td>$${fmtNum(p.amount_usd)}</td>
+                        <td>$${p.entry_price > 0 ? fmtNum(p.entry_price) : '-'}</td>
+                        <td>$${p.current_price > 0 ? fmtNum(p.current_price) : '-'}</td>
+                        <td class="${pnlColor}">$${fmtNum(p.pnl_usd)}</td>
+                        <td class="${pnlColor}">${fmtPct(p.pnl_pct)}</td>
+                        <td>${timeAgo(p.executed_at)}</td>
+                        <td>${txLink}</td>
+                    </tr>
+                `;
+            }).join('') || '<tr><td colspan="8" style="text-align:center;color:#8892a0">No open positions</td></tr>';
+        }
+
         async function loadLogs() {
             const res = await fetch('/api/logs?limit=100');
             const data = await res.json();
@@ -1125,6 +1190,7 @@ async def dashboard():
         // Auto-refresh watchlist every 30s
         loadWatchlist();
         loadSettings();
+        loadPositions();
         setInterval(() => {
             if (document.getElementById('watchlist-panel').classList.contains('active')) {
                 loadWatchlist();
