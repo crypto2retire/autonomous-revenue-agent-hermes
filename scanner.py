@@ -159,15 +159,15 @@ class Scanner:
 
         # Hard filters
         if price <= 0:
-            return {"signal": "avoid", "confidence": 0.98, "reasoning": "No reliable USD price", "risk_level": "high", "tags": "no-price"}
+            return {"signal": "avoid", "confidence": 0.02, "reasoning": "No reliable USD price", "risk_level": "high", "tags": "no-price"}
         if liquidity < settings.pumpfun_min_liquidity_usd:
-            return {"signal": "avoid", "confidence": 0.96, "reasoning": f"Liquidity too thin (${liquidity:,.0f})", "risk_level": "high", "tags": "low-liquidity"}
+            return {"signal": "avoid", "confidence": 0.04, "reasoning": f"Liquidity too thin (${liquidity:,.0f})", "risk_level": "high", "tags": "low-liquidity"}
         if volume < 5000:
-            return {"signal": "avoid", "confidence": 0.92, "reasoning": f"24h volume too low (${volume:,.0f})", "risk_level": "high", "tags": "low-volume"}
+            return {"signal": "avoid", "confidence": 0.08, "reasoning": f"24h volume too low (${volume:,.0f})", "risk_level": "high", "tags": "low-volume"}
         if age_hours > settings.pumpfun_max_age_hours:
-            return {"signal": "avoid", "confidence": 0.90, "reasoning": f"Token too old ({age_hours:.0f}h)", "risk_level": "high", "tags": "old-token"}
+            return {"signal": "avoid", "confidence": 0.10, "reasoning": f"Token too old ({age_hours:.0f}h)", "risk_level": "high", "tags": "old-token"}
         if price_change < -20:
-            return {"signal": "avoid", "confidence": 0.90, "reasoning": f"Sharp 24h drawdown ({price_change:.1f}%)", "risk_level": "high", "tags": "drawdown"}
+            return {"signal": "avoid", "confidence": 0.10, "reasoning": f"Sharp 24h drawdown ({price_change:.1f}%)", "risk_level": "high", "tags": "drawdown"}
 
         # Scoring
         score = 0.0
@@ -191,7 +191,7 @@ class Scanner:
             return {"signal": "buy", "confidence": min(0.90, score), "reasoning": f"Buy: liquidity ${liquidity:,.0f}, volume ${volume:,.0f}, 24h {price_change:.1f}%, age {age_hours:.1f}h", "risk_level": "medium", "tags": ",".join(tags)}
         if score >= 0.45:
             return {"signal": "hold", "confidence": min(0.75, score), "reasoning": f"Watch: liquidity ${liquidity:,.0f}, volume ${volume:,.0f}, 24h {price_change:.1f}%", "risk_level": "medium", "tags": ",".join(tags)}
-        return {"signal": "avoid", "confidence": 0.75, "reasoning": f"Weak setup: liquidity ${liquidity:,.0f}, volume ${volume:,.0f}", "risk_level": "high", "tags": ",".join(tags) or "weak-setup"}
+        return {"signal": "avoid", "confidence": min(0.40, score), "reasoning": f"Weak setup: liquidity ${liquidity:,.0f}, volume ${volume:,.0f}", "risk_level": "high", "tags": ",".join(tags) or "weak-setup"}
 
     # ── Main Scan Loop ───────────────────────────────────────────────
 
@@ -323,6 +323,7 @@ class Scanner:
                 signal=analysis["signal"],
                 confidence=analysis["confidence"],
             )
+            await DB.update_coin_intraday_changes(address)
         else:
             await DB.add_coin(
                 token_address=address,
@@ -331,7 +332,7 @@ class Scanner:
                 price_at_discovery=token.get("priceUsd", 0),
                 ai_score=analysis["confidence"],
                 signal=analysis["signal"],
-                deployer_address=None,
+                deployer_address=token.get("deployer_address"),
                 discovery_source=token.get("source", "unknown"),
                 chain="solana",
                 extra_data={
@@ -359,6 +360,7 @@ class Scanner:
                 signal=analysis["signal"],
                 confidence=analysis["confidence"],
             )
+            await DB.update_coin_intraday_changes(address)
 
         # Execute strong buy signals
         if analysis["signal"] == "buy" and analysis["confidence"] > 0.7:

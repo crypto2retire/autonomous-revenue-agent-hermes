@@ -40,13 +40,19 @@ class PositionManager:
 
     # ── Price Fetching ───────────────────────────────────────────────
 
-    async def _get_current_price(self, token_address: str, chain: str) -> Optional[float]:
-        """Get current token price using SolanaPriceClient with Birdeye priority."""
-        # First check CoinWatch cache
+    async def _get_current_price(self, token_address: str, chain: str, force_refresh: bool = False) -> Optional[float]:
+        """Get current token price using SolanaPriceClient with Birdeye priority.
+
+        force_refresh=True bypasses the DB cache. The old behavior returned any
+        cached positive price forever, so dashboard prices/PNL stayed frozen.
+        """
         coin = await DB.get_coin(token_address)
+        cached_price = None
         if coin and coin.last_price_usd is not None:
             cached_price = float(coin.last_price_usd)
-            if cached_price > 0:
+            if cached_price <= 0:
+                cached_price = None
+            elif not force_refresh:
                 return cached_price
         
         # Fallback: use SolanaPriceClient (Birdeye → Jupiter → DexScreener → CoinGecko)
@@ -61,30 +67,34 @@ class PositionManager:
             except Exception as e:
                 await DB.log_event("warning", "price_fetch_failed", f"Failed to fetch price for {token_address}: {e}")
         
-        return None
+        return cached_price
 
     async def _refresh_all_position_prices(self):
         """Background task: refresh prices for all open positions."""
         try:
             positions = await DB.get_open_positions()
+            refreshed = 0
             for pos in positions:
                 token_address = pos.get("token_address")
                 chain = pos.get("chain", "solana")
                 if token_address:
                     try:
-                        price = await self._get_current_price(token_address, chain)
+                        price = await self._get_current_price(token_address, chain, force_refresh=True)
                         if price is not None and price > 0:
                             await DB.update_coin_market_data(token_address, price_usd=price)
+                            refreshed += 1
                     except Exception as e:
                         await DB.log_event("warning", "price_refresh_failed", 
                             f"Failed to refresh price for {pos.get('symbol', 'UNKNOWN')}: {e}")
+            await DB.log_event("info", "position_price_refresh_completed", f"Refreshed {refreshed} open position prices")
         except Exception as e:
             await DB.log_event("error", "price_refresh_loop_failed", str(e))
 
     async def _refresh_watchlist_prices(self):
         """Background task: refresh prices for ALL watchlist coins (not just positions)."""
         try:
-            coins = await DB.get_all_coins(limit=500)
+            coins = await DB.get_all_coins(limit=100)
+            refreshed = 0
             for coin in coins:
                 token_address = str(coin.token_address) if coin.token_address is not None else ""
                 if token_address == "":
@@ -92,7 +102,7 @@ class PositionManager:
                 chain = str(coin.chain) if coin.chain is not None else "solana"
                 symbol = str(coin.symbol) if coin.symbol is not None else "UNKNOWN"
                 try:
-                    price = await self._get_current_price(token_address, chain)
+                    price = await self._get_current_price(token_address, chain, force_refresh=True)
                     if price is not None and price > 0:
                         await DB.update_coin_market_data(token_address, price_usd=price)
                         # Also record price history for intraday calculations
@@ -103,9 +113,11 @@ class PositionManager:
                         )
                         # Update intraday changes
                         await DB.update_coin_intraday_changes(token_address)
+                        refreshed += 1
                 except Exception as e:
                     await DB.log_event("warning", "watchlist_price_refresh_failed", 
                         f"Failed to refresh price for {symbol}: {e}")
+            await DB.log_event("info", "watchlist_price_refresh_completed", f"Refreshed {refreshed} watchlist prices")
         except Exception as e:
             await DB.log_event("error", "watchlist_price_refresh_loop_failed", str(e))
 
@@ -122,7 +134,7 @@ class PositionManager:
         highest_price = float(trade.highest_price_seen) if trade.highest_price_seen is not None else entry_price
         amount_sold_pct = float(trade.amount_sold_pct) if trade.amount_sold_pct is not None else 0.0
 
-        current_price = await self._get_current_price(token_address, chain)
+        current_price = await self._get_current_price(token_address, chain, force_refresh=True)
         if current_price is None or current_price <= 0 or entry_price <= 0:
             return {"should_sell": False, "reason": None, "pnl_pct": 0}
 

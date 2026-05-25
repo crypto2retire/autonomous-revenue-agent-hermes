@@ -127,6 +127,8 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
+        # Ignore removed legacy env vars (BASE_*, ODOS_*, etc.) so old deployments keep booting.
+        extra = "ignore"
 
 
 @lru_cache()

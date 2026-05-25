@@ -100,7 +100,7 @@ class Executor:
             amount_usd=amount_usd,
             signal=signal,
             confidence=confidence,
-            is_paper=settings.is_paper,
+            is_paper=not settings.is_live,
         )
 
         try:
@@ -128,8 +128,8 @@ class Executor:
                 price_usd=actual_token_price,
             )
 
-            if settings.is_paper:
-                # Paper trade: simulate without real execution
+            if not settings.is_live:
+                # Paper trade: simulate without real execution. Only AGENT_MODE=live may send orders.
                 await asyncio.sleep(0.5)
                 await DB.update_trade(
                     trade_id=trade_id,
@@ -252,7 +252,7 @@ class Executor:
     ) -> bool:
         """Execute a sell to close a position."""
         try:
-            if settings.is_paper:
+            if not settings.is_live:
                 await asyncio.sleep(0.3)
                 # Get current price for exit price
                 price_client = await get_solana_price_client()

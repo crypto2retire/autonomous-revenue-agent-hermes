@@ -26,55 +26,77 @@ async def health():
 
 @app.get("/api/status")
 async def get_status():
-    """Return agent health, last price refresh timestamps, and component status."""
-    from datetime import datetime
-    now = datetime.utcnow()
-    
+    """Return agent health without crashing when timestamps/config are stale."""
+    from datetime import datetime, timezone
+
+    def _aware(dt):
+        if dt is None:
+            return None
+        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+
+    def _age_status(dt, healthy_seconds, stale_label="stale", empty_label="unknown"):
+        dt = _aware(dt)
+        if dt is None:
+            return empty_label
+        age = (datetime.now(timezone.utc) - dt).total_seconds()
+        return "healthy" if age < healthy_seconds else stale_label
+
+    now = datetime.now(timezone.utc)
+
     try:
-        # Get latest log events for each component
-        logs = await DB.get_logs(limit=50, hours=1)
-        
+        logs = await DB.get_logs(limit=100, hours=24)
+        coins = await DB.get_all_coins(limit=500)
+        positions = await DB.get_open_positions()
+
         latest_scan = None
         latest_price_refresh = None
         latest_trade = None
-        
         for log in logs:
-            if latest_scan is None and "scan" in (log.event or "").lower():
-                latest_scan = log.created_at
-            if latest_price_refresh is None and "price" in (log.event or "").lower():
-                latest_price_refresh = log.created_at
-            if latest_trade is None and "trade" in (log.event or "").lower():
-                latest_trade = log.created_at
-        
-        # Count active coins and positions
-        coins = await DB.get_all_coins(limit=1)
-        positions = await DB.get_open_positions()
-        
+            event = (log.event or "").lower()
+            created = _aware(log.created_at)
+            if any(k in event for k in ("scan_completed", "pumpfun_scan", "scanner_started")):
+                latest_scan = max([d for d in (latest_scan, created) if d is not None], default=None)
+            if any(k in event for k in ("price_refresh", "watchlist_price", "position_price")):
+                latest_price_refresh = max([d for d in (latest_price_refresh, created) if d is not None], default=None)
+            if "trade" in event or "buy" in event or "sell" in event:
+                latest_trade = max([d for d in (latest_trade, created) if d is not None], default=None)
+
+        latest_coin_seen = None
+        for coin in coins:
+            seen = _aware(getattr(coin, "last_seen_at", None))
+            if seen and (latest_coin_seen is None or seen > latest_coin_seen):
+                latest_coin_seen = seen
+
+        # If scanner is clearly updating coins, use that as a fallback health signal.
+        if latest_scan is None:
+            latest_scan = latest_coin_seen
+        if latest_price_refresh is None:
+            latest_price_refresh = latest_coin_seen
+
         return {
             "status": "ok",
             "agent": "crypto-trading-agent",
             "timestamp": now.isoformat(),
             "components": {
                 "scanner": {
-                    "status": "healthy" if latest_scan is not None and (now - latest_scan).total_seconds() < 300 else "stale",
-                    "last_scan": latest_scan.isoformat() if latest_scan is not None else None,
+                    "status": _age_status(latest_scan, 300),
+                    "last_scan": latest_scan.isoformat() if latest_scan else None,
                 },
                 "price_refresh": {
-                    "status": "healthy" if latest_price_refresh is not None and (now - latest_price_refresh).total_seconds() < 120 else "stale",
-                    "last_refresh": latest_price_refresh.isoformat() if latest_price_refresh is not None else None,
+                    "status": _age_status(latest_price_refresh, 180),
+                    "last_refresh": latest_price_refresh.isoformat() if latest_price_refresh else None,
                 },
                 "trading": {
-                    "status": "healthy" if latest_trade is not None and (now - latest_trade).total_seconds() < 600 else "idle",
-                    "last_trade": latest_trade.isoformat() if latest_trade is not None else None,
+                    "status": "live" if (await DB.get_setting("live_trading_enabled", False) and settings.is_live) else "paper",
+                    "last_trade": latest_trade.isoformat() if latest_trade else None,
                 },
             },
             "counts": {
-                "tracked_coins": len(coins) if coins else 0,
+                "tracked_coins": len(coins),
                 "open_positions": len(positions),
             },
         }
     except Exception as e:
-        # Don't crash the endpoint — return degraded status
         return {
             "status": "degraded",
             "agent": "crypto-trading-agent",
@@ -85,10 +107,7 @@ async def get_status():
                 "price_refresh": {"status": "unknown", "last_refresh": None},
                 "trading": {"status": "unknown", "last_trade": None},
             },
-            "counts": {
-                "tracked_coins": 0,
-                "open_positions": 0,
-            },
+            "counts": {"tracked_coins": 0, "open_positions": 0},
         }
 
 
@@ -342,6 +361,7 @@ async def get_trading_status():
         "agent_mode": settings.agent_mode,
         "effective_mode": "live" if effective_live else "paper",
         "paper_trading_enabled": not effective_live,
+        "env_guard": None if settings.is_live else "AGENT_MODE is paper, so dashboard live toggle only records intent and will not send real orders.",
         "max_positions": settings.max_positions,
         "trade_size_usd": settings.min_trade_size_usd,
     }
@@ -352,17 +372,21 @@ async def toggle_trading():
     """Toggle live trading on/off."""
     current = await DB.get_setting("live_trading_enabled", False)
     new_value = not current
-    await DB.set_setting("live_trading_enabled", new_value, "bool", "Whether live trading is enabled (true) or paper trading only (false)")
-    await DB.log_event("info", "trading_toggled", f"Live trading {'enabled' if new_value else 'disabled'}")
-    return {"live_trading_enabled": new_value, "message": f"Live trading {'enabled' if new_value else 'disabled'}"}
+    await DB.set_setting("live_trading_enabled", new_value, "bool", "Whether live trading is requested; real orders require AGENT_MODE=live")
+    effective_live = bool(new_value and settings.is_live)
+    message = "Live trading enabled" if effective_live else ("Live requested, but AGENT_MODE=paper so paper trading remains active" if new_value else "Live trading disabled - paper mode only")
+    await DB.log_event("info", "trading_toggled", message)
+    return {"live_trading_enabled": effective_live, "live_requested": new_value, "effective_mode": "live" if effective_live else "paper", "message": message}
 
 
 @app.post("/api/trading/enable")
 async def enable_trading():
     """Enable live trading."""
-    await DB.set_setting("live_trading_enabled", True, "bool", "Whether live trading is enabled")
-    await DB.log_event("info", "trading_enabled", "Live trading enabled")
-    return {"live_trading_enabled": True, "message": "Live trading enabled"}
+    await DB.set_setting("live_trading_enabled", True, "bool", "Whether live trading is requested")
+    effective_live = bool(settings.is_live)
+    message = "Live trading enabled" if effective_live else "Live requested, but AGENT_MODE=paper so paper trading remains active"
+    await DB.log_event("info", "trading_enabled", message)
+    return {"live_trading_enabled": effective_live, "live_requested": True, "effective_mode": "live" if effective_live else "paper", "message": message}
 
 
 @app.post("/api/trading/disable")
@@ -1262,7 +1286,7 @@ async def dashboard():
             document.getElementById('trading-status').style.color = isLive ? '#f87171' : '#00d4aa';
             
             document.getElementById('trading-indicator').style.background = isLive ? '#f87171' : '#00d4aa';
-            document.getElementById('trading-text').textContent = isLive ? 'Live Trading Enabled' : `Paper Trading Active (AGENT_MODE=${statusData.agent_mode || 'paper'})`;
+            document.getElementById('trading-text').textContent = isLive ? 'Live Trading Enabled' : (statusData.env_guard || `Paper Trading Active (AGENT_MODE=${statusData.agent_mode || 'paper'})`);
             document.getElementById('trading-text').style.color = isLive ? '#f87171' : '#00d4aa';
             
             // Load all settings
@@ -1299,8 +1323,8 @@ async def dashboard():
                 
                 const msgDiv = document.getElementById('trading-message');
                 msgDiv.style.display = 'block';
-                msgDiv.style.background = data.live_trading_enabled ? 'rgba(248, 113, 113, 0.1)' : 'rgba(0, 212, 170, 0.1)';
-                msgDiv.style.color = data.live_trading_enabled ? '#f87171' : '#00d4aa';
+                msgDiv.style.background = data.effective_mode === 'live' ? 'rgba(248, 113, 113, 0.1)' : 'rgba(0, 212, 170, 0.1)';
+                msgDiv.style.color = data.effective_mode === 'live' ? '#f87171' : '#00d4aa';
                 msgDiv.textContent = data.message;
                 
                 // Reload settings display

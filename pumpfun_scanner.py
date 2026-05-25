@@ -229,11 +229,11 @@ class PumpFunScanner:
 
         # Pump.fun specific filters
         if price <= 0:
-            return {"signal": "avoid", "confidence": 0.98, "reasoning": "No price data", "risk_level": "high", "tags": "no-price"}
+            return {"signal": "avoid", "confidence": 0.02, "reasoning": "No price data", "risk_level": "high", "tags": "no-price"}
         if liquidity < 5000:
-            return {"signal": "avoid", "confidence": 0.95, "reasoning": f"Liquidity too thin (${liquidity:,.0f})", "risk_level": "high", "tags": "low-liquidity"}
+            return {"signal": "avoid", "confidence": 0.05, "reasoning": f"Liquidity too thin (${liquidity:,.0f})", "risk_level": "high", "tags": "low-liquidity"}
         if mcap > 10_000_000:
-            return {"signal": "avoid", "confidence": 0.85, "reasoning": f"Market cap too high for pump play (${mcap:,.0f})", "risk_level": "medium", "tags": "too-big"}
+            return {"signal": "avoid", "confidence": 0.15, "reasoning": f"Market cap too high for pump play (${mcap:,.0f})", "risk_level": "medium", "tags": "too-big"}
 
         score = 0.0
         tags = []
@@ -271,7 +271,7 @@ class PumpFunScanner:
             }
         return {
             "signal": "avoid",
-            "confidence": 0.70,
+            "confidence": min(0.40, score),
             "reasoning": f"Weak pump.fun setup: liq ${liquidity:,.0f}, vol ${volume:,.0f}, mcap ${mcap:,.0f}",
             "risk_level": "high",
             "tags": ",".join(tags) or "weak-setup",
@@ -309,7 +309,7 @@ class PumpFunScanner:
                 await self.scanner.executor.execute_sell(
                     token_address=str(trade.token_address),
                     symbol=str(trade.symbol),
-                    amount_token=0,  # Sell all
+                    amount_token=float(trade.amount_token or 0),
                     trade_id=str(trade.trade_id),
                     chain="solana",
                     reason=f"Stop loss: {gain_pct:.1f}%",
@@ -376,6 +376,8 @@ class PumpFunScanner:
                     liquidity_usd=launch.get("liquidity", {}).get("usd"),
                     market_cap=launch.get("marketCap") or 0,
                 )
+                if launch.get("deployer_address"):
+                    await DB.update_coin_deployer(launch["tokenAddress"], launch["deployer_address"])
             else:
                 await DB.add_coin(
                     token_address=launch["tokenAddress"],
@@ -404,6 +406,8 @@ class PumpFunScanner:
                     market_cap=launch.get("marketCap") or 0,
                 )
                 if launch.get("deployer_address"):
+                    await DB.update_coin_deployer(launch["tokenAddress"], launch["deployer_address"])
+                if launch.get("deployer_address"):
                     await DB.update_deployer_stats(launch["deployer_address"])
 
             # Execute buy on strong signals
@@ -414,7 +418,7 @@ class PumpFunScanner:
                     {"token": launch["tokenAddress"], "confidence": analysis["confidence"]},
                 )
                 await self.scanner._maybe_execute_trade(
-                    launch["tokenAddress"], launch, analysis, "solana"
+                    launch["tokenAddress"], launch, analysis
                 )
 
         # Check existing positions for profit targets

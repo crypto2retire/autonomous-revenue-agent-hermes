@@ -214,6 +214,7 @@ class DB:
                 deployer_address=deployer_address if deployer_address else None,
                 discovery_source=discovery_source,
                 extra_data=extra_data,
+                tags=str(extra_data.get("tags")) if isinstance(extra_data, dict) and extra_data.get("tags") else None,
             )
             session.add(coin)
             await session.commit()
@@ -340,6 +341,8 @@ class DB:
                 if extra_data is not None:
                     coin.extra_data = extra_data
                     coin.ai_analysis = str(extra_data)
+                    if isinstance(extra_data, dict) and extra_data.get("tags"):
+                        coin.tags = str(extra_data.get("tags"))
                 coin.last_seen_at = datetime.utcnow()
                 await session.commit()
 
@@ -360,7 +363,19 @@ class DB:
             coin = result.scalar_one_or_none()
             if coin:
                 if price_usd is not None:
-                    coin.last_price_usd = price_usd
+                    current_price = float(price_usd)
+                    coin.last_price_usd = current_price
+                    if coin.first_price_usd is None or float(coin.first_price_usd or 0) <= 0:
+                        coin.first_price_usd = current_price
+                    if coin.highest_price_since_discovery is None or current_price > float(coin.highest_price_since_discovery or 0):
+                        coin.highest_price_since_discovery = current_price
+                    if coin.lowest_price_since_discovery is None or float(coin.lowest_price_since_discovery or 0) <= 0 or current_price < float(coin.lowest_price_since_discovery):
+                        coin.lowest_price_since_discovery = current_price
+                    first_price = float(coin.first_price_usd or 0)
+                    if first_price > 0:
+                        coin.price_change_pct = ((current_price - first_price) / first_price) * 100
+                        coin.peak_gain_pct = ((float(coin.highest_price_since_discovery or current_price) - first_price) / first_price) * 100
+                        coin.peak_loss_pct = ((float(coin.lowest_price_since_discovery or current_price) - first_price) / first_price) * 100
                 if volume_24h is not None:
                     coin.volume_24h = volume_24h
                 if liquidity_usd is not None:
@@ -371,6 +386,26 @@ class DB:
                     coin.holder_count = holder_count
                 coin.last_seen_at = datetime.utcnow()
                 await session.commit()
+
+    @staticmethod
+    async def update_coin_deployer(token_address: str, deployer_address: str):
+        """Attach a deployer/creator to a watched coin after discovery."""
+        if not deployer_address:
+            return
+        async with async_session() as session:
+            deployer = await session.get(Deployer, deployer_address)
+            if not deployer:
+                deployer = Deployer(address=deployer_address)
+                session.add(deployer)
+                await session.flush()
+            result = await session.execute(
+                select(CoinWatch).where(CoinWatch.token_address == token_address)
+            )
+            coin = result.scalar_one_or_none()
+            if coin:
+                coin.deployer_address = deployer_address
+                coin.last_seen_at = datetime.utcnow()
+            await session.commit()
 
     @staticmethod
     async def mark_coin_rugged(token_address: str):
