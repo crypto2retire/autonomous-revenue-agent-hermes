@@ -1,6 +1,6 @@
 """Database models for the crypto trading agent."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum as PyEnum
 
@@ -71,8 +71,8 @@ class Deployer(Base):
     avg_token_lifespan_days = Column(Numeric(10, 2))
     
     # First/last seen
-    first_seen_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-    last_seen_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    first_seen_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    last_seen_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     
     # Analysis
     notes = Column(Text)
@@ -113,8 +113,8 @@ class CoinWatch(Base):
     deployer = relationship("Deployer", back_populates="tokens")
     
     # Discovery tracking
-    first_seen_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-    last_seen_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    first_seen_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    last_seen_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     first_price_usd = Column(Numeric(24, 12))
     last_price_usd = Column(Numeric(24, 12))
     price_change_pct = Column(Numeric(10, 4))
@@ -221,7 +221,7 @@ class PriceHistory(Base):
     signal = Column(String(20))
     confidence = Column(Numeric(5, 4))
     
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
         Index("idx_price_history_token_time", "token_address", "created_at"),
@@ -264,7 +264,7 @@ class Trade(Base):
     signal = Column(String(20))
     confidence = Column(Numeric(5, 4))
     is_paper = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     executed_at = Column(DateTime(timezone=True))
     closed_at = Column(DateTime(timezone=True))
     close_reason = Column(String(50))
@@ -323,7 +323,7 @@ class WalletSnapshot(Base):
     eth_price_usd = Column(Numeric(16, 6))
     total_usd = Column(Numeric(16, 6))
     token_balances = Column(Text)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     def to_dict(self):
         return {
@@ -349,7 +349,7 @@ class AgentLog(Base):
     token_address = Column(String(66), index=True)
     symbol = Column(String(20))
     data = Column(Text)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
         Index("idx_logs_event", "event"),
@@ -384,7 +384,7 @@ class PerformanceMetric(Base):
     win_rate = Column(Numeric(5, 4))
     avg_trade_size = Column(Numeric(16, 6))
     max_drawdown_pct = Column(Numeric(10, 4))
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     def to_dict(self):
         return {
@@ -412,7 +412,7 @@ class AgentSettings(Base):
     value = Column(Text)
     value_type = Column(String(20), default="string")  # string, int, float, bool, json
     description = Column(Text)
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     def to_dict(self):
         return {

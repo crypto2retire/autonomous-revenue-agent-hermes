@@ -5,7 +5,7 @@ and sells underperformers to recycle capital for the Buy Agent.
 """
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional
 
 from config import get_settings
@@ -24,7 +24,7 @@ class PositionManager:
         self.executor = Executor()
         self.running = False
         self.sell_count_today = 0
-        self.last_reset = datetime.utcnow().date()
+        self.last_reset = datetime.now(timezone.utc).date()
         self._price_client = None
 
     async def _get_price_client(self):
@@ -145,7 +145,11 @@ class PositionManager:
         # Calculate hold duration
         hold_hours = 0
         if executed_at:
-            hold_hours = (datetime.utcnow() - executed_at).total_seconds() / 3600
+            # Ensure both datetimes are timezone-aware before subtracting
+            now = datetime.now(timezone.utc)
+            if executed_at.tzinfo is None:
+                executed_at = executed_at.replace(tzinfo=timezone.utc)
+            hold_hours = (now - executed_at).total_seconds() / 3600
 
         result = {
             "trade_id": trade.trade_id,
@@ -286,7 +290,7 @@ class PositionManager:
                 await DB.update_trade(
                     trade_id=trade_id,
                     status=TradeStatus.CLOSED,
-                    closed_at=datetime.utcnow(),
+                    closed_at=datetime.now(timezone.utc),
                     close_reason=reason,
                 )
 
@@ -313,7 +317,7 @@ class PositionManager:
     async def check_all_positions(self):
         """Check all open positions and sell if needed."""
         # Reset daily counter
-        today = datetime.utcnow().date()
+        today = datetime.now(timezone.utc).date()
         if today != self.last_reset:
             self.sell_count_today = 0
             self.last_reset = today
