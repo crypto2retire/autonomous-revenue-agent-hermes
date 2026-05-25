@@ -114,7 +114,7 @@ class PositionManager:
     async def evaluate_position(self, trade) -> Dict[str, Any]:
         """Evaluate a single position and determine if it should be sold."""
         token_address = trade.token_address
-        chain = trade.chain or "base"
+        chain = trade.chain or "solana"
         symbol = trade.symbol or "UNKNOWN"
         entry_price = float(trade.entry_price) if trade.entry_price is not None else 0.0
         amount_usd = float(trade.amount_usd) if trade.amount_usd is not None else 0.0

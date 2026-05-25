@@ -320,6 +320,7 @@ class WalletSnapshot(Base):
     address = Column(String(66), nullable=False)
     chain = Column(String(20), default="base")
     eth_balance = Column(Numeric(24, 12))
+    sol_balance = Column(Numeric(24, 12))
     eth_price_usd = Column(Numeric(16, 6))
     total_usd = Column(Numeric(16, 6))
     token_balances = Column(Text)
@@ -331,6 +332,7 @@ class WalletSnapshot(Base):
             "address": self.address,
             "chain": self.chain,
             "eth_balance": _f(self.eth_balance),
+            "sol_balance": _f(self.sol_balance),
             "eth_price_usd": _f(self.eth_price_usd),
             "total_usd": _f(self.total_usd),
             "token_balances": self.token_balances,

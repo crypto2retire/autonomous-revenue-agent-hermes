@@ -1,4 +1,4 @@
-"""Token scanner — discovers coins via DexScreener, CoinGecko, BaseScan, Dune, and analyzes with Venice AI."""
+"""Token scanner — discovers Solana coins via DexScreener and analyzes with rule-based scoring."""
 
 import asyncio
 import json
@@ -9,19 +9,15 @@ import httpx
 
 from config import get_settings
 from database import DB
-from coingecko_client import get_coingecko
-from dune_client import get_dune
-from basescan_client import get_basescan
 from executor import Executor
 
 settings = get_settings()
 
 DEXSCREENER_BASE = "https://api.dexscreener.com"
-DEEPSEEK_BASE = "https://api.deepseek.com/v1"
 
 
 class Scanner:
-    """Scans for crypto opportunities and persists everything to the watchlist."""
+    """Scans for Solana pump.fun opportunities and persists to watchlist."""
 
     def __init__(self):
         self.http = httpx.AsyncClient(
@@ -29,21 +25,13 @@ class Scanner:
             headers={"User-Agent": "Mozilla/5.0 (compatible; CryptoAgent/1.0)"},
         )
         self.running = False
-        self.cg = get_coingecko()
-        self.dune = get_dune()
-        self.basescan = get_basescan()
         self.executor = Executor()
-        # Rate limiters to prevent 429 errors
+        # Rate limiters
         self._dexscreener_last_call = 0
-        self._dexscreener_min_interval = 1.1  # 1.1s between DexScreener calls (free tier ~60/min)
-        self._solana_rpc_last_call = 0
-        self._solana_rpc_min_interval = 1.1  # 1.1s between Solana RPC calls
+        self._dexscreener_min_interval = 1.1
 
     async def close(self):
         await self.http.aclose()
-        await self.cg.close()
-        await self.dune.close()
-        await self.basescan.close()
         await self.executor.close()
 
     async def _dexscreener_rate_limit(self):
@@ -54,18 +42,10 @@ class Scanner:
             await asyncio.sleep(self._dexscreener_min_interval - elapsed)
         self._dexscreener_last_call = asyncio.get_event_loop().time()
 
-    async def _solana_rpc_rate_limit(self):
-        """Enforce minimum interval between Solana RPC calls."""
-        now = asyncio.get_event_loop().time()
-        elapsed = now - self._solana_rpc_last_call
-        if elapsed < self._solana_rpc_min_interval:
-            await asyncio.sleep(self._solana_rpc_min_interval - elapsed)
-        self._solana_rpc_last_call = asyncio.get_event_loop().time()
-
     # ── DexScreener API ──────────────────────────────────────────────
 
-    async def get_trending_profiles(self, chain: str = "base") -> List[Dict[str, Any]]:
-        """Get trending token profiles on a chain."""
+    async def get_trending_profiles(self, chain: str = "solana") -> List[Dict[str, Any]]:
+        """Get trending token profiles on Solana."""
         url = f"{DEXSCREENER_BASE}/token-profiles/latest/v1"
         try:
             await self._dexscreener_rate_limit()
@@ -73,50 +53,45 @@ class Scanner:
             resp.raise_for_status()
             data = resp.json()
             tokens = [
-                t for t in data if t.get("chainId", "").lower() == chain.lower()
+                t for t in data if t.get("chainId", "").lower() == "solana"
             ]
             return tokens[:50]
         except Exception as e:
             await DB.log_event("error", "dexscreener_profiles_failed", str(e))
             return []
 
-    async def get_latest_pairs(self, chain: str = "base") -> List[Dict[str, Any]]:
-        """Get latest created pairs on a chain via search."""
+    async def get_latest_pairs(self, chain: str = "solana") -> List[Dict[str, Any]]:
+        """Get latest created pairs on Solana."""
         url = f"{DEXSCREENER_BASE}/latest/dex/search"
         try:
             await self._dexscreener_rate_limit()
-            resp = await self.http.get(url, params={"q": f"{chain} USDC"})
+            resp = await self.http.get(url, params={"q": "solana USDC"})
             resp.raise_for_status()
             data = resp.json()
             pairs = data.get("pairs", [])
-            # Filter by chain
-            if chain:
-                pairs = [p for p in pairs if p.get("chainId", "").lower() == chain.lower()]
+            pairs = [p for p in pairs if p.get("chainId", "").lower() == "solana"]
             return pairs[:50]
         except Exception as e:
             await DB.log_event("error", "dexscreener_latest_pairs_failed", str(e))
             return []
 
-    async def get_top_pairs(self, chain: str = "base") -> List[Dict[str, Any]]:
-        """Get top pairs by volume on a chain via search."""
+    async def get_top_pairs(self, chain: str = "solana") -> List[Dict[str, Any]]:
+        """Get top pairs by volume on Solana."""
         url = f"{DEXSCREENER_BASE}/latest/dex/search"
         try:
             await self._dexscreener_rate_limit()
-            resp = await self.http.get(url, params={"q": f"{chain} WETH"})
+            resp = await self.http.get(url, params={"q": "solana SOL"})
             resp.raise_for_status()
             data = resp.json()
             pairs = data.get("pairs", [])
-            # Filter by chain
-            if chain:
-                pairs = [p for p in pairs if p.get("chainId", "").lower() == chain.lower()]
-            # Sort by volume
+            pairs = [p for p in pairs if p.get("chainId", "").lower() == "solana"]
             pairs.sort(key=lambda p: float(p.get("volume", {}).get("h24", 0) or 0), reverse=True)
             return pairs[:50]
         except Exception as e:
             await DB.log_event("error", "dexscreener_top_pairs_failed", str(e))
             return []
 
-    async def search_pairs(self, query: str, chain: str = "base") -> List[Dict[str, Any]]:
+    async def search_pairs(self, query: str, chain: str = "solana") -> List[Dict[str, Any]]:
         """Search for pairs by token symbol/name."""
         url = f"{DEXSCREENER_BASE}/latest/dex/search"
         try:
@@ -125,17 +100,15 @@ class Scanner:
             resp.raise_for_status()
             data = resp.json()
             pairs = data.get("pairs", [])
-            # Filter by chain
-            if chain:
-                pairs = [p for p in pairs if p.get("chainId", "").lower() == chain.lower()]
+            pairs = [p for p in pairs if p.get("chainId", "").lower() == "solana"]
             return pairs[:30]
         except Exception as e:
             await DB.log_event("error", "dexscreener_search_failed", str(e))
             return []
 
-    async def get_token_pairs(self, token_address: str, chain: str = "base") -> List[Dict[str, Any]]:
-        """Get pair data for a specific token — includes symbol, name, price, volume."""
-        url = f"{DEXSCREENER_BASE}/token-pairs/v1/{chain}/{token_address}"
+    async def get_token_pairs(self, token_address: str, chain: str = "solana") -> List[Dict[str, Any]]:
+        """Get pair data for a specific token."""
+        url = f"{DEXSCREENER_BASE}/token-pairs/v1/solana/{token_address}"
         try:
             await self._dexscreener_rate_limit()
             resp = await self.http.get(url)
@@ -145,499 +118,58 @@ class Scanner:
             await DB.log_event("error", "dexscreener_token_pairs_failed", str(e), {"token_address": token_address})
             return []
 
-    # ── CoinGecko API ────────────────────────────────────────────────
-
-    async def get_coingecko_trending(self) -> List[Dict[str, Any]]:
-        """Get trending coins from CoinGecko."""
+    async def get_pumpfun_pairs(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get pump.fun specific pairs on Solana."""
+        url = f"{DEXSCREENER_BASE}/latest/dex/search"
         try:
-            data = await self.cg.get_trending()
-            coins = []
-            for item in data.get("coins", []):
-                coin = item.get("item", {})
-                # Get contract address for base chain if available
-                platforms = coin.get("platforms", {})
-                base_addr = platforms.get("base", "")
-                coins.append({
-                    "tokenAddress": base_addr or coin.get("contract_address", ""),
-                    "symbol": coin.get("symbol", "UNKNOWN"),
-                    "name": coin.get("name", "Unknown"),
-                    "priceUsd": coin.get("data", {}).get("price", 0),
-                    "volume": {"h24": coin.get("data", {}).get("total_volume", 0)},
-                    "liquidity": {"usd": coin.get("data", {}).get("market_cap", 0)},
-                    "marketCap": coin.get("data", {}).get("market_cap", 0),
-                    "priceChange": {"h24": coin.get("data", {}).get("price_change_percentage_24h", {}).get("usd", 0)},
-                    "source": "coingecko_trending",
-                })
-            return coins
-        except Exception as e:
-            await DB.log_event("error", "coingecko_trending_failed", str(e))
-            return []
-
-    async def get_coingecko_markets(self, per_page: int = 100) -> List[Dict[str, Any]]:
-        """Get top coins by market cap from CoinGecko."""
-        try:
-            data = await self.cg.get_coins_markets(vs_currency="usd", per_page=per_page, page=1)
-            coins = []
-            for item in data:
-                # Try to get Base chain contract address
-                # Note: markets endpoint doesn't include platforms, so we use symbol+name as key
-                coins.append({
-                    "tokenAddress": item.get("contract_address", ""),
-                    "symbol": item.get("symbol", "UNKNOWN").upper(),
-                    "name": item.get("name", "Unknown"),
-                    "priceUsd": item.get("current_price", 0),
-                    "volume": {"h24": item.get("total_volume", 0)},
-                    "liquidity": {"usd": item.get("market_cap", 0)},
-                    "marketCap": item.get("market_cap", 0),
-                    "priceChange": {"h24": item.get("price_change_percentage_24h", 0)},
-                    "source": "coingecko_markets",
-                })
-            return coins
-        except Exception as e:
-            await DB.log_event("error", "coingecko_markets_failed", str(e))
-            return []
-
-    async def get_coingecko_gainers(self) -> List[Dict[str, Any]]:
-        """Get top gainers from CoinGecko."""
-        try:
-            data = await self.cg.get_top_gainers_losers()
-            coins = []
-            for item in data.get("top_gainers", [])[:20]:
-                coins.append({
-                    "tokenAddress": item.get("contract_address", ""),
-                    "symbol": item.get("symbol", "UNKNOWN"),
-                    "name": item.get("name", "Unknown"),
-                    "priceUsd": item.get("current_price", 0),
-                    "volume": {"h24": item.get("total_volume", 0)},
-                    "liquidity": {"usd": item.get("market_cap", 0)},
-                    "marketCap": item.get("market_cap", 0),
-                    "priceChange": {"h24": item.get("price_change_percentage_24h", 0)},
-                    "source": "coingecko_gainers",
-                })
-            return coins
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 401:
-                await DB.log_event("warning", "coingecko_gainers_skipped", "Gainers endpoint requires paid plan")
-            else:
-                await DB.log_event("error", "coingecko_gainers_failed", str(e))
-            return []
-        except Exception as e:
-            await DB.log_event("error", "coingecko_gainers_failed", str(e))
-            return []
-
-    async def get_coingecko_new_coins(self) -> List[Dict[str, Any]]:
-        """Get newly listed coins from CoinGecko."""
-        try:
-            data = await self.cg.get_new_coins()
-            coins = []
-            for item in data[:20]:
-                coins.append({
-                    "tokenAddress": item.get("contract_address", ""),
-                    "symbol": item.get("symbol", "UNKNOWN"),
-                    "name": item.get("name", "Unknown"),
-                    "priceUsd": 0,
-                    "volume": {"h24": 0},
-                    "liquidity": {"usd": 0},
-                    "marketCap": 0,
-                    "priceChange": {"h24": 0},
-                    "source": "coingecko_new",
-                })
-            return coins
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 401:
-                await DB.log_event("warning", "coingecko_new_skipped", "New coins endpoint requires paid plan")
-            else:
-                await DB.log_event("error", "coingecko_new_failed", str(e))
-            return []
-        except Exception as e:
-            await DB.log_event("error", "coingecko_new_failed", str(e))
-            return []
-
-    async def get_coingecko_token_price(self, token_address: str, network: str = "base") -> Optional[float]:
-        """Get token price by contract address from CoinGecko."""
-        try:
-            data = await self.cg.get_onchain_token_price(network, token_address)
-            price_data = data.get("data", {})
-            if isinstance(price_data, dict):
-                for addr, info in price_data.items():
-                    if isinstance(info, dict):
-                        return float(info.get("usd", 0))
-        except Exception as e:
-            await DB.log_event("error", "coingecko_price_failed", str(e), {"token_address": token_address})
-        return None
-
-    async def get_coingecko_onchain_trending(self) -> List[Dict[str, Any]]:
-        """Get trending on-chain pools from CoinGecko."""
-        try:
-            data = await self.cg.get_onchain_trending_pools()
-            pools = data.get("data", [])
-            coins = []
-            for pool in pools[:30]:
-                attributes = pool.get("attributes", {})
-                base_token = attributes.get("base_token", {})
-                coins.append({
-                    "tokenAddress": base_token.get("address", ""),
-                    "symbol": base_token.get("symbol", "UNKNOWN"),
-                    "name": base_token.get("name", "Unknown"),
-                    "priceUsd": float(attributes.get("base_token_price_usd", 0) or 0),
-                    "volume": {"h24": float(attributes.get("volume_usd", {}).get("h24", 0) or 0)},
-                    "liquidity": {"usd": float(attributes.get("reserve_usd", 0) or 0)},
-                    "marketCap": 0,
-                    "priceChange": {"h24": float(attributes.get("price_change_percentage", {}).get("h24", 0) or 0)},
-                    "source": "coingecko_onchain_trending",
-                })
-            return coins
-        except Exception as e:
-            await DB.log_event("error", "coingecko_onchain_trending_failed", str(e))
-            return []
-
-    # ── Dune Analytics ───────────────────────────────────────────────
-
-    async def get_dune_trending_tokens(self) -> List[Dict[str, Any]]:
-        """Get trending tokens from Dune Analytics queries."""
-        try:
-            # Use Dune's real-time trending tokens query (free community query)
-            # Query: Top tokens on Base by volume in last 24h
-            result = await self.dune.execute_and_wait(
-                query_id=12345,  # Placeholder - will be skipped gracefully
-            )
-            tokens = []
-            for row in result.get("result", {}).get("rows", []):
-                tokens.append({
-                    "tokenAddress": row.get("token_address", ""),
-                    "symbol": row.get("symbol", "UNKNOWN"),
-                    "name": row.get("name", "Unknown"),
-                    "priceUsd": row.get("price", 0),
-                    "volume": {"h24": row.get("volume_24h", 0)},
-                    "liquidity": {"usd": row.get("liquidity", 0)},
-                    "marketCap": row.get("market_cap", 0),
-                    "priceChange": {"h24": row.get("price_change_24h", 0)},
-                    "source": "dune",
-                })
-            return tokens
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 400:
-                await DB.log_event("warning", "dune_skipped", "Dune query not configured - add a valid query ID")
-            else:
-                await DB.log_event("error", "dune_trending_failed", str(e))
-            return []
-        except Exception as e:
-            await DB.log_event("error", "dune_trending_failed", str(e))
-            return []
-
-    # ── BaseScan ──────────────────────────────────────────────────────
-
-    async def get_basescan_token_info(self, token_address: str) -> Dict[str, Any]:
-        """Get token info from BaseScan for a contract address."""
-        try:
-            info = await self.basescan.get_token_info(token_address)
-            if info:
-                return {
-                    "name": info.get("tokenName", ""),
-                    "symbol": info.get("tokenSymbol", ""),
-                    "decimals": int(info.get("tokenDecimal", 18)),
-                    "total_supply": info.get("totalSupply", "0"),
-                    "contract": token_address,
-                }
-        except Exception as e:
-            await DB.log_event("error", "basescan_token_info_failed", str(e), {"token_address": token_address})
-        return {}
-
-    async def get_basescan_contract_creation(self, token_address: str) -> Dict[str, Any]:
-        """Get contract creation details from BaseScan."""
-        try:
-            result = await self.basescan.get_contract_creation([token_address])
-            if result:
-                return result[0]
-        except Exception as e:
-            await DB.log_event("error", "basescan_contract_failed", str(e), {"token_address": token_address})
-        return {}
-
-    async def get_basescan_token_holder_count(self, token_address: str) -> Optional[int]:
-        """Get total holder count, falling back to recent active holder count if needed."""
-        try:
-            holder_count = await self.basescan.get_token_holder_count(token_address)
-            if holder_count is not None:
-                return holder_count
-        except Exception as e:
-            await DB.log_event("warning", "basescan_holder_count_failed", str(e), {"token_address": token_address})
-
-        try:
-            scraped_count = await self.basescan.scrape_token_holder_count(token_address)
-            if scraped_count is not None:
-                await DB.log_event("info", "holder_count_scrape_fallback", f"Using BaseScan page holder count: {scraped_count}", {"token_address": token_address})
-                return scraped_count
-        except Exception as e:
-            await DB.log_event("warning", "basescan_holder_scrape_failed", str(e), {"token_address": token_address})
-
-        try:
-            active_count = await self.basescan.get_token_active_holder_count(token_address)
-            if active_count is not None:
-                await DB.log_event("info", "holder_count_active_fallback", f"Using recent active holder count proxy: {active_count}", {"token_address": token_address})
-            return active_count
-        except Exception as e:
-            await DB.log_event("warning", "basescan_active_holder_count_failed", str(e), {"token_address": token_address})
-            return None
-
-    async def get_basescan_token_holders(self, token_address: str, top_n: int = 10) -> List[Dict[str, Any]]:
-        """Get top token holders from BaseScan."""
-        try:
-            holders = await self.basescan.get_token_holder_list(token_address, offset=top_n)
-            return holders
-        except Exception as e:
-            await DB.log_event("error", "basescan_holders_failed", str(e), {"token_address": token_address})
-            return []
-
-    async def get_basescan_gas(self) -> Dict[str, Any]:
-        """Get current gas prices from BaseScan."""
-        try:
-            return await self.basescan.get_gas_oracle()
-        except Exception as e:
-            await DB.log_event("error", "basescan_gas_failed", str(e))
-            return {}
-
-    async def get_new_contracts_from_transfers(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """Discover new contracts by looking at recent token transfers."""
-        try:
-            # Get recent token transfers for a known token to find new contracts
-            transfers = await self.basescan.get_token_transfers(
-                address="0x4200000000000000000000000000000000000006",  # WETH on Base
-                offset=limit,
-            )
-            # Handle string response (error message)
-            if isinstance(transfers, str):
-                await DB.log_event("warning", "basescan_transfers_string", f"Got string response: {transfers[:100]}")
-                return []
-            # Extract unique contract addresses
-            seen = set()
-            contracts = []
-            for tx in transfers:
-                if not isinstance(tx, dict):
-                    continue
-                contract = tx.get("contractAddress", "")
-                if contract and contract not in seen:
-                    seen.add(contract)
-                    contracts.append({
-                        "tokenAddress": contract,
-                        "symbol": tx.get("tokenSymbol", "UNKNOWN"),
-                        "name": tx.get("tokenName", "Unknown"),
-                        "source": "basescan_transfers",
-                    })
-            return contracts
-        except Exception as e:
-            await DB.log_event("error", "basescan_new_contracts_failed", str(e))
-            return []
-
-    # ── Venice AI Analysis ───────────────────────────────────────────
-
-    async def analyze_opportunity(self, token: Dict[str, Any]) -> Dict[str, Any]:
-        """Use Venice AI to analyze a token."""
-        symbol = token.get("symbol", "UNKNOWN")
-        name = token.get("name", "Unknown")
-        price = token.get("priceUsd", 0)
-        volume = token.get("volume", {}).get("h24", 0)
-        liquidity = token.get("liquidity", {}).get("usd", 0)
-        market_cap = token.get("marketCap", 0)
-        price_change = token.get("priceChange", {}).get("h24", 0)
-        rule_analysis = self._rule_based_signal(token)
-
-        # Do not spend LLM tokens on clearly untradable tokens; the rule engine explains why.
-        if rule_analysis["signal"] == "avoid" and rule_analysis["confidence"] >= 0.90:
-            return rule_analysis
-
-        prompt = f"""Analyze this cryptocurrency token for short-term trading potential:
-
-Token: {name} (${symbol})
-Price: ${price}
-24h Volume: ${volume}
-Liquidity: ${liquidity}
-Market Cap: ${market_cap}
-24h Price Change: {price_change}%
-
-Provide a JSON response with exactly these fields:
-- signal: one of [buy, sell, hold, avoid]
-- confidence: 0.0 to 1.0
-- reasoning: brief explanation
-- risk_level: low, medium, or high
-- tags: comma-separated keywords like trending,gainer,new,momentum
-
-Respond ONLY with valid JSON."""
-
-        try:
-            resp = await self.http.post(
-                f"{settings.deepseek_base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {settings.deepseek_api_key.get_secret_value()}"},
-                json={
-                    "model": settings.deepseek_model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.2,
-                    "max_tokens": 800,
-                },
-            )
+            await self._dexscreener_rate_limit()
+            resp = await self.http.get(url, params={"q": "pump.fun solana"})
             resp.raise_for_status()
             data = resp.json()
-            content = data["choices"][0]["message"]["content"]
-
-            # Extract JSON from markdown if needed
-            content = content.strip()
-            if "```" in content:
-                parts = content.split("```")
-                for part in parts:
-                    part = part.strip()
-                    if part.startswith("json"):
-                        part = part[4:].strip()
-                    if part and part.startswith("{"):
-                        content = part
-                        break
-
-            # Try to find JSON object in the content
-            try:
-                analysis = json.loads(content.strip())
-            except json.JSONDecodeError:
-                import re
-                json_match = re.search(r'\{[\s\S]*\}', content)
-                if json_match:
-                    analysis = json.loads(json_match.group())
-                else:
-                    raise
-
-            llm_analysis = {
-                "signal": analysis.get("signal", "avoid").lower(),
-                "confidence": float(analysis.get("confidence", 0)),
-                "reasoning": analysis.get("reasoning", ""),
-                "risk_level": analysis.get("risk_level", "high"),
-                "tags": analysis.get("tags", ""),
-            }
-
-            # Hybrid decision: deterministic guardrails can approve paper-mode opportunities,
-            # but they never override an LLM into live trading unless AGENT_MODE is paper.
-            if rule_analysis["signal"] == "buy" and llm_analysis["signal"] in {"buy", "hold", "avoid"}:
-                if settings.is_paper or llm_analysis["signal"] in {"buy", "hold"}:
-                    return {
-                        **rule_analysis,
-                        "confidence": max(rule_analysis["confidence"], min(llm_analysis["confidence"], 0.80)),
-                        "reasoning": f"{rule_analysis['reasoning']} | LLM: {llm_analysis['reasoning']}",
-                        "tags": ",".join(filter(None, [rule_analysis.get("tags", ""), llm_analysis.get("tags", "")]))[:250],
-                    }
-            return llm_analysis
+            pairs = data.get("pairs", [])
+            # Filter for pump.fun pairs
+            pump_pairs = [
+                p for p in pairs
+                if p.get("chainId", "").lower() == "solana"
+                and "pump" in (p.get("dexId", "") + p.get("url", "")).lower()
+            ]
+            pump_pairs.sort(
+                key=lambda p: float(p.get("volume", {}).get("h24", 0) or 0),
+                reverse=True
+            )
+            return pump_pairs[:limit]
         except Exception as e:
-            await DB.log_event(
-                "error", "ai_analysis_failed", str(e),
-                {"token_address": token.get("tokenAddress", ""), "symbol": symbol},
-            )
-            return {
-                "signal": "avoid",
-                "confidence": 0,
-                "reasoning": f"Analysis failed: {e}",
-                "risk_level": "high",
-                "tags": "",
-            }
+            await DB.log_event("error", "dexscreener_pumpfun_failed", str(e))
+            return []
 
-    # ── Main Scan Loop ───────────────────────────────────────────────
-
-    async def scan_once(self, chain: str = None):
-        """Run one scan cycle: discover → analyze → persist."""
-        chains = [chain] if chain else settings.enabled_chains
-        
-        for c in chains:
-            await DB.log_event("info", "scan_started", f"Scanning {c} chain")
-            await self._scan_chain(c)
-            await asyncio.sleep(2)  # Brief pause between chains
-
-    async def _scan_chain(self, chain: str):
-        """Scan a specific chain."""
-        all_tokens: List[Dict[str, Any]] = []
-
-        # Fetch from all sources concurrently (chain-aware)
-        if chain.lower() == "solana":
-            # Solana-specific sources
-            results = await asyncio.gather(
-                self.get_trending_profiles("solana"),
-                self.get_latest_pairs("solana"),
-                self.get_top_pairs("solana"),
-                self.search_pairs("SOL", "solana"),
-                self.search_pairs("USDC", "solana"),
-                return_exceptions=True,
-            )
-            source_names = [
-                "dexscreener_profiles", "dexscreener_latest_pairs", "dexscreener_top_pairs",
-                "dexscreener_search_sol", "dexscreener_search_usdc",
-            ]
-        else:
-            # Base chain sources (full suite)
-            results = await asyncio.gather(
-                self.get_trending_profiles(chain),
-                self.get_latest_pairs(chain),
-                self.get_top_pairs(chain),
-                self.get_coingecko_trending(),
-                self.get_coingecko_markets(per_page=50),
-                self.get_coingecko_gainers(),
-                self.get_coingecko_new_coins(),
-                self.get_coingecko_onchain_trending(),
-                self.get_dune_trending_tokens(),
-                self.get_new_contracts_from_transfers(limit=30),
-                return_exceptions=True,
-            )
-            source_names = [
-                "dexscreener_profiles", "dexscreener_latest_pairs", "dexscreener_top_pairs",
-                "coingecko_trending", "coingecko_markets", "coingecko_gainers",
-                "coingecko_new", "coingecko_onchain_trending", "dune", "basescan_transfers"
-            ]
-
-        # Process results
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                await DB.log_event("error", f"{source_names[i]}_failed", str(result))
-            elif isinstance(result, list):
-                for token in result:
-                    if token.get("tokenAddress") or token.get("token_address"):
-                        # Normalize token address field
-                        if "token_address" in token and "tokenAddress" not in token:
-                            token["tokenAddress"] = token["token_address"]
-                        token["source"] = source_names[i]
-                        token["chain"] = chain
-                        all_tokens.append(token)
-
-        # Deduplicate by token address (or symbol+name if no address)
-        seen = set()
-        unique_tokens = []
-        for t in all_tokens:
-            addr = t.get("tokenAddress", "")
-            if addr:
-                key = f"{chain}:{addr.lower()}"
-            else:
-                key = f"{chain}:{t.get('symbol','')}_{t.get('name','')}".lower()
-            if key and key not in seen:
-                seen.add(key)
-                unique_tokens.append(t)
-
-        await DB.log_event("info", "tokens_discovered", f"Found {len(unique_tokens)} unique {chain} tokens from {len([r for r in results if not isinstance(r, Exception)])} sources", {"count": len(unique_tokens), "chain": chain})
-
-        # Process tokens concurrently in batches
-        batch_size = 5
-        for i in range(0, len(unique_tokens), batch_size):
-            batch = unique_tokens[i:i + batch_size]
-            await asyncio.gather(*[self._process_token(token, chain) for token in batch])
-            await asyncio.sleep(0.5)
-
-        await DB.log_event("info", "scan_completed", f"Scanned {len(unique_tokens)} {chain} tokens")
+    # ── Rule-based Analysis ──────────────────────────────────────────
 
     def _rule_based_signal(self, token: Dict[str, Any]) -> Dict[str, Any]:
-        """Deterministic trading guardrails so the agent can act without blindly trusting an LLM."""
+        """Deterministic trading guardrails for pump.fun tokens."""
         price = float(token.get("priceUsd") or 0)
         volume = float(token.get("volume", {}).get("h24") or 0)
         liquidity = float(token.get("liquidity", {}).get("usd") or 0)
         price_change = float(token.get("priceChange", {}).get("h24") or 0)
         market_cap = float(token.get("marketCap") or 0)
+        pair_age = float(token.get("pairCreatedAt", 0))
+        # Calculate age in hours if timestamp available
+        age_hours = 999
+        if pair_age:
+            age_hours = (datetime.utcnow().timestamp() * 1000 - pair_age) / (1000 * 3600)
 
+        # Hard filters
         if price <= 0:
-            return {"signal": "avoid", "confidence": 0.98, "reasoning": "No reliable USD price available", "risk_level": "high", "tags": "no-price"}
-        if liquidity < 10000:
+            return {"signal": "avoid", "confidence": 0.98, "reasoning": "No reliable USD price", "risk_level": "high", "tags": "no-price"}
+        if liquidity < settings.pumpfun_min_liquidity_usd:
             return {"signal": "avoid", "confidence": 0.96, "reasoning": f"Liquidity too thin (${liquidity:,.0f})", "risk_level": "high", "tags": "low-liquidity"}
         if volume < 5000:
             return {"signal": "avoid", "confidence": 0.92, "reasoning": f"24h volume too low (${volume:,.0f})", "risk_level": "high", "tags": "low-volume"}
+        if age_hours > settings.pumpfun_max_age_hours:
+            return {"signal": "avoid", "confidence": 0.90, "reasoning": f"Token too old ({age_hours:.0f}h)", "risk_level": "high", "tags": "old-token"}
         if price_change < -20:
             return {"signal": "avoid", "confidence": 0.90, "reasoning": f"Sharp 24h drawdown ({price_change:.1f}%)", "risk_level": "high", "tags": "drawdown"}
+
+        # Scoring
         score = 0.0
         tags = []
         if liquidity >= 50000:
@@ -652,90 +184,193 @@ Respond ONLY with valid JSON."""
             score += 0.18; tags.append("momentum")
         if market_cap and market_cap < 50_000_000:
             score += 0.10; tags.append("small-cap")
+        if age_hours < 2:
+            score += 0.15; tags.append("fresh-launch")
 
         if score >= 0.75:
-            return {"signal": "buy", "confidence": min(0.90, score), "reasoning": f"Rule engine buy: liquidity ${liquidity:,.0f}, volume ${volume:,.0f}, 24h change {price_change:.1f}%", "risk_level": "medium", "tags": ",".join(tags)}
+            return {"signal": "buy", "confidence": min(0.90, score), "reasoning": f"Buy: liquidity ${liquidity:,.0f}, volume ${volume:,.0f}, 24h {price_change:.1f}%, age {age_hours:.1f}h", "risk_level": "medium", "tags": ",".join(tags)}
         if score >= 0.45:
-            return {"signal": "hold", "confidence": min(0.75, score), "reasoning": f"Watch candidate: liquidity ${liquidity:,.0f}, volume ${volume:,.0f}, 24h change {price_change:.1f}%", "risk_level": "medium", "tags": ",".join(tags)}
-        return {"signal": "avoid", "confidence": 0.75, "reasoning": f"Insufficient trade setup: liquidity ${liquidity:,.0f}, volume ${volume:,.0f}, 24h change {price_change:.1f}%", "risk_level": "high", "tags": ",".join(tags) or "weak-setup"}
+            return {"signal": "hold", "confidence": min(0.75, score), "reasoning": f"Watch: liquidity ${liquidity:,.0f}, volume ${volume:,.0f}, 24h {price_change:.1f}%", "risk_level": "medium", "tags": ",".join(tags)}
+        return {"signal": "avoid", "confidence": 0.75, "reasoning": f"Weak setup: liquidity ${liquidity:,.0f}, volume ${volume:,.0f}", "risk_level": "high", "tags": ",".join(tags) or "weak-setup"}
 
-    async def _apply_holder_volume_trend_signal(
-        self, address: str, token: Dict[str, Any], analysis: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Promote tokens when holder count and 24h volume are rising across scans."""
-        current_volume = float(token.get("volume", {}).get("h24") or 0)
-        current_holders = token.get("holder_count")
-        try:
-            current_holders = int(current_holders) if current_holders is not None else None
-        except (TypeError, ValueError):
-            current_holders = None
+    # ── Main Scan Loop ───────────────────────────────────────────────
 
-        history = await DB.get_price_history(address, hours=72, limit=10)
-        previous = next(
-            (h for h in reversed(history) if h.volume_24h is not None or h.holder_count is not None),
-            None,
-        )
-        if not previous:
-            analysis["reasoning"] = f"{analysis.get('reasoning', '')} | Monitoring holder count and volume trend; first snapshot captured.".strip()
-            analysis["tags"] = ",".join(filter(None, [analysis.get("tags", ""), "trend-baseline"]))[:250]
-            return analysis
+    async def scan_once(self, chain: str = None):
+        """Run one scan cycle."""
+        chains = ["solana"]
+        for c in chains:
+            await self._scan_chain(c)
 
-        previous_volume = float(previous.volume_24h or 0)
-        previous_holders = previous.holder_count
-        volume_rising = current_volume > 0 and previous_volume > 0 and current_volume > previous_volume
-        holder_rising = current_holders is not None and previous_holders is not None and current_holders > previous_holders
+    async def _scan_chain(self, chain: str):
+        """Scan Solana for opportunities."""
+        if chain.lower() != "solana":
+            return
 
-        token["volume_trend"] = {
-            "current": current_volume,
-            "previous": previous_volume,
-            "rising": volume_rising,
-        }
-        token["holder_trend"] = {
-            "current": current_holders,
-            "previous": previous_holders,
-            "rising": holder_rising,
-        }
+        tokens = []
+        # Get pump.fun pairs
+        pump_pairs = await self.get_pumpfun_pairs(limit=30)
+        for pair in pump_pairs:
+            base = pair.get("baseToken", {})
+            tokens.append({
+                "tokenAddress": base.get("address", ""),
+                "symbol": base.get("symbol", "UNKNOWN"),
+                "name": base.get("name", "Unknown"),
+                "priceUsd": float(pair.get("priceUsd", 0) or 0),
+                "volume": {"h24": float(pair.get("volume", {}).get("h24", 0) or 0)},
+                "liquidity": {"usd": float(pair.get("liquidity", {}).get("usd", 0) or 0)},
+                "marketCap": float(pair.get("marketCap", 0) or 0),
+                "priceChange": {"h24": float(pair.get("priceChange", {}).get("h24", 0) or 0)},
+                "pairCreatedAt": pair.get("pairCreatedAt", 0),
+                "source": "pumpfun_dexscreener",
+            })
 
-        if holder_rising and volume_rising:
-            liquidity = float(token.get("liquidity", {}).get("usd") or 0)
-            price = float(token.get("priceUsd") or 0)
-            price_change = float(token.get("priceChange", {}).get("h24") or 0)
-            reason = (
-                f"Holder count and volume are both rising "
-                f"(holders {previous_holders}->{current_holders}, "
-                f"volume ${previous_volume:,.0f}->${current_volume:,.0f})"
+        # Get trending profiles
+        trending = await self.get_trending_profiles("solana")
+        for t in trending:
+            tokens.append({
+                "tokenAddress": t.get("tokenAddress", ""),
+                "symbol": t.get("symbol", "UNKNOWN"),
+                "name": t.get("name", "Unknown"),
+                "priceUsd": 0,
+                "volume": {"h24": 0},
+                "liquidity": {"usd": 0},
+                "marketCap": 0,
+                "priceChange": {"h24": 0},
+                "source": "trending_profile",
+            })
+
+        # Get latest pairs
+        latest = await self.get_latest_pairs("solana")
+        for pair in latest:
+            base = pair.get("baseToken", {})
+            tokens.append({
+                "tokenAddress": base.get("address", ""),
+                "symbol": base.get("symbol", "UNKNOWN"),
+                "name": base.get("name", "Unknown"),
+                "priceUsd": float(pair.get("priceUsd", 0) or 0),
+                "volume": {"h24": float(pair.get("volume", {}).get("h24", 0) or 0)},
+                "liquidity": {"usd": float(pair.get("liquidity", {}).get("usd", 0) or 0)},
+                "marketCap": float(pair.get("marketCap", 0) or 0),
+                "priceChange": {"h24": float(pair.get("priceChange", {}).get("h24", 0) or 0)},
+                "pairCreatedAt": pair.get("pairCreatedAt", 0),
+                "source": "latest_pairs",
+            })
+
+        # Deduplicate by address
+        seen = set()
+        unique_tokens = []
+        for t in tokens:
+            addr = t.get("tokenAddress", "")
+            if addr and addr not in seen:
+                seen.add(addr)
+                unique_tokens.append(t)
+
+        # Process in batches
+        batch_size = 5
+        for i in range(0, len(unique_tokens), batch_size):
+            batch = unique_tokens[i:i + batch_size]
+            await asyncio.gather(*[self._process_token(token) for token in batch])
+
+        await DB.log_event("info", "scan_completed", f"Scanned {len(unique_tokens)} Solana tokens, found {len([t for t in unique_tokens if t.get('signal') == 'buy'])} buy signals")
+
+    async def _process_token(self, token: Dict[str, Any]):
+        """Process a single token: enrich, analyze, persist."""
+        address = token.get("tokenAddress", "")
+        if not address:
+            return
+
+        # Get detailed pair data
+        pairs = await self.get_token_pairs(address)
+        if pairs:
+            best_pair = max(pairs, key=lambda p: float(p.get("liquidity", {}).get("usd", 0) or 0))
+            base_token = best_pair.get("baseToken", {})
+            token["symbol"] = base_token.get("symbol", token.get("symbol", "UNKNOWN"))
+            token["name"] = base_token.get("name", token.get("name", "Unknown"))
+            token["priceUsd"] = float(best_pair.get("priceUsd", 0) or 0)
+            token["volume"] = {"h24": float(best_pair.get("volume", {}).get("h24", 0) or 0)}
+            token["liquidity"] = {"usd": float(best_pair.get("liquidity", {}).get("usd", 0) or 0)}
+            token["marketCap"] = float(best_pair.get("marketCap", 0) or 0)
+            token["priceChange"] = {"h24": float(best_pair.get("priceChange", {}).get("h24", 0) or 0)}
+            token["pairCreatedAt"] = best_pair.get("pairCreatedAt", 0)
+
+        # Rule-based analysis only (no LLM)
+        analysis = self._rule_based_signal(token)
+
+        # Persist to watchlist
+        existing = await DB.get_coin(address)
+        if existing:
+            await DB.update_coin_signal(address, analysis["signal"], analysis["confidence"], {
+                "reasoning": analysis["reasoning"],
+                "risk_level": analysis["risk_level"],
+                "tags": analysis["tags"],
+                "source": token.get("source", "unknown"),
+                "chain": "solana",
+            })
+            await DB.update_coin_market_data(
+                token_address=address,
+                price_usd=token.get("priceUsd", 0),
+                volume_24h=token.get("volume", {}).get("h24"),
+                liquidity_usd=token.get("liquidity", {}).get("usd"),
+                market_cap=token.get("marketCap") or 0,
             )
-            if price > 0 and liquidity >= 10000 and current_volume >= 5000 and price_change > -20:
-                return {
-                    **analysis,
-                    "signal": "buy",
-                    "confidence": max(float(analysis.get("confidence") or 0), 0.84),
-                    "reasoning": f"{reason}; buy/accumulate signal. Prior analysis: {analysis.get('reasoning', '')}",
-                    "risk_level": analysis.get("risk_level", "medium"),
-                    "tags": ",".join(filter(None, [analysis.get("tags", ""), "holders-rising", "volume-rising", "trend-buy"]))[:250],
-                }
-            return {
-                **analysis,
-                "signal": "hold",
-                "confidence": max(float(analysis.get("confidence") or 0), 0.72),
-                "reasoning": f"{reason}; monitoring because liquidity/price safety filters are not fully met. Prior analysis: {analysis.get('reasoning', '')}",
-                "tags": ",".join(filter(None, [analysis.get("tags", ""), "holders-rising", "volume-rising", "trend-monitor"]))[:250],
-            }
+            await DB.record_price_history(
+                token_address=address,
+                symbol=token.get("symbol", "UNKNOWN"),
+                price_usd=token.get("priceUsd", 0),
+                volume_24h=token.get("volume", {}).get("h24"),
+                liquidity_usd=token.get("liquidity", {}).get("usd"),
+                market_cap=token.get("marketCap") or 0,
+                signal=analysis["signal"],
+                confidence=analysis["confidence"],
+            )
+        else:
+            await DB.add_coin(
+                token_address=address,
+                symbol=token.get("symbol", "UNKNOWN"),
+                name=token.get("name", "Unknown"),
+                price_at_discovery=token.get("priceUsd", 0),
+                ai_score=analysis["confidence"],
+                signal=analysis["signal"],
+                deployer_address=None,
+                discovery_source=token.get("source", "unknown"),
+                chain="solana",
+                extra_data={
+                    "reasoning": analysis["reasoning"],
+                    "risk_level": analysis["risk_level"],
+                    "tags": analysis["tags"],
+                    "source": token.get("source", "unknown"),
+                    "chain": "solana",
+                },
+            )
+            await DB.update_coin_market_data(
+                token_address=address,
+                price_usd=token.get("priceUsd", 0),
+                volume_24h=token.get("volume", {}).get("h24"),
+                liquidity_usd=token.get("liquidity", {}).get("usd"),
+                market_cap=token.get("marketCap") or 0,
+            )
+            await DB.record_price_history(
+                token_address=address,
+                symbol=token.get("symbol", "UNKNOWN"),
+                price_usd=token.get("priceUsd", 0),
+                volume_24h=token.get("volume", {}).get("h24"),
+                liquidity_usd=token.get("liquidity", {}).get("usd"),
+                market_cap=token.get("marketCap") or 0,
+                signal=analysis["signal"],
+                confidence=analysis["confidence"],
+            )
 
-        if holder_rising or volume_rising:
-            rising = "holders" if holder_rising else "volume"
-            return {
-                **analysis,
-                "signal": "hold" if analysis.get("signal") == "avoid" else analysis.get("signal", "hold"),
-                "confidence": max(float(analysis.get("confidence") or 0), 0.68),
-                "reasoning": f"Monitoring: {rising} rising, waiting for both holders and volume to rise. Prior analysis: {analysis.get('reasoning', '')}",
-                "tags": ",".join(filter(None, [analysis.get("tags", ""), f"{rising}-rising", "trend-monitor"]))[:250],
-            }
+        # Execute strong buy signals
+        if analysis["signal"] == "buy" and analysis["confidence"] > 0.7:
+            await DB.log_event(
+                "info", "strong_buy_signal",
+                f"{token.get('symbol', 'UNKNOWN')}: {analysis['reasoning']}",
+                {"token_address": address, "symbol": token.get("symbol", ""), "confidence": analysis["confidence"], "price": token.get("priceUsd", 0)},
+            )
+            await self._maybe_execute_trade(address, token, analysis)
 
-        return analysis
-
-    async def _maybe_execute_trade(self, address: str, token: Dict[str, Any], analysis: Dict[str, Any], chain: str):
-        """Open one guarded trade for a strong buy signal. Paper mode is allowed by default; live requires env + DB enable."""
+    async def _maybe_execute_trade(self, address: str, token: Dict[str, Any], analysis: Dict[str, Any]):
+        """Open one guarded trade for a strong buy signal."""
         if analysis.get("signal") != "buy" or float(analysis.get("confidence") or 0) < 0.70:
             return
 
@@ -744,8 +379,8 @@ Respond ONLY with valid JSON."""
         if len(open_trades) >= settings.max_positions:
             await DB.log_event("warning", "trade_skipped_max_positions", f"Max open positions reached ({settings.max_positions})")
             return
-        if any(t.token_address == address and t.chain == chain for t in open_trades):
-            await DB.log_event("info", "trade_skipped_existing_position", f"Already holding {token.get('symbol', 'UNKNOWN')} ({chain})", {"token_address": address})
+        if any(t.token_address == address for t in open_trades):
+            await DB.log_event("info", "trade_skipped_existing_position", f"Already holding {token.get('symbol', 'UNKNOWN')}", {"token_address": address})
             return
 
         live_requested = bool(await DB.get_setting("live_trading_enabled", False))
@@ -763,172 +398,27 @@ Respond ONLY with valid JSON."""
             amount_usd=amount_usd,
             signal=analysis.get("signal", "buy"),
             confidence=float(analysis.get("confidence") or 0),
-            chain=chain,
+            chain="solana",
         )
         if trade_id:
             await DB.log_event(
                 "info",
                 "auto_trade_opened",
-                f"{'Live' if effective_live else 'Paper'} buy opened for {token.get('symbol', 'UNKNOWN')} ({chain}) at ${amount_usd}",
-                {"token_address": address, "trade_id": trade_id, "chain": chain, "mode": "live" if effective_live else "paper"},
+                f"{'Live' if effective_live else 'Paper'} buy opened for {token.get('symbol', 'UNKNOWN')} at ${amount_usd}",
+                {"token_address": address, "trade_id": trade_id, "mode": "live" if effective_live else "paper"},
             )
-
-    async def _process_token(self, token: Dict[str, Any], chain: str = "base"):
-        """Process a single token: enrich, analyze, persist."""
-        address = token.get("tokenAddress", "")
-        if not address:
-            return
-
-        # Try to get price from CoinGecko if missing (Base only)
-        if chain.lower() == "base" and not token.get("priceUsd"):
-            cg_price = await self.get_coingecko_token_price(address, chain)
-            if cg_price:
-                token["priceUsd"] = cg_price
-
-        # For DexScreener tokens, get detailed pair data
-        if token.get("source", "").startswith("dexscreener"):
-            pairs = await self.get_token_pairs(address, chain)
-            if pairs:
-                best_pair = max(pairs, key=lambda p: float(p.get("liquidity", {}).get("usd", 0) or 0))
-                base_token = best_pair.get("baseToken", {})
-                token["symbol"] = base_token.get("symbol", token.get("symbol", "UNKNOWN"))
-                token["name"] = base_token.get("name", token.get("name", "Unknown"))
-                token["priceUsd"] = float(best_pair.get("priceUsd", 0) or 0)
-                token["volume"] = {"h24": float(best_pair.get("volume", {}).get("h24", 0) or 0)}
-                token["liquidity"] = {"usd": float(best_pair.get("liquidity", {}).get("usd", 0) or 0)}
-                token["marketCap"] = float(best_pair.get("marketCap", 0) or 0)
-                token["priceChange"] = {"h24": float(best_pair.get("priceChange", {}).get("h24", 0) or 0)}
-
-        # Enrich with chain-specific data
-        deployer_address = None
-        if chain.lower() == "base":
-            basescan_info = await self.get_basescan_token_info(address)
-            if basescan_info:
-                token["name"] = basescan_info.get("name") or token.get("name", "Unknown")
-                token["symbol"] = basescan_info.get("symbol") or token.get("symbol", "UNKNOWN")
-                token["basescan"] = basescan_info
-
-            contract_info = await self.get_basescan_contract_creation(address)
-            if contract_info and isinstance(contract_info, dict):
-                token["contract_creation"] = contract_info
-                deployer_address = contract_info.get("contractCreator")
-
-            holder_count = await self.get_basescan_token_holder_count(address)
-            if holder_count is not None:
-                token["holder_count"] = holder_count
-
-            holders = await self.get_basescan_token_holders(address, top_n=5)
-            if holders and isinstance(holders, list):
-                token["top_holders"] = [h for h in holders if isinstance(h, dict)]
-
-        # AI/rule analysis, then trend override: rising holders + rising volume => buy/monitor.
-        analysis = await self.analyze_opportunity(token)
-        analysis = await self._apply_holder_volume_trend_signal(address, token, analysis)
-
-        # Persist to watchlist with deployer tracking
-        existing = await DB.get_coin(address)
-        if existing:
-            analysis_data = {
-                "reasoning": analysis["reasoning"],
-                "risk_level": analysis["risk_level"],
-                "tags": analysis["tags"],
-                "source": token.get("source", "unknown"),
-                "chain": chain,
-                "basescan": token.get("basescan") if chain.lower() == "base" else None,
-                "contract_creation": token.get("contract_creation") if chain.lower() == "base" else None,
-                "top_holders": token.get("top_holders") if chain.lower() == "base" else None,
-                "holder_count": token.get("holder_count"),
-                "holder_trend": token.get("holder_trend"),
-                "volume_trend": token.get("volume_trend"),
-            }
-            await DB.update_coin_signal(address, analysis["signal"], analysis["confidence"], analysis_data)
-            await DB.update_coin_market_data(
-                token_address=address,
-                price_usd=token.get("priceUsd", 0),
-                volume_24h=token.get("volume", {}).get("h24"),
-                liquidity_usd=token.get("liquidity", {}).get("usd"),
-                market_cap=token.get("marketCap") or 0,
-                holder_count=token.get("holder_count"),
-            )
-            await DB.record_price_history(
-                token_address=address,
-                symbol=token.get("symbol", "UNKNOWN"),
-                price_usd=token.get("priceUsd", 0),
-                volume_24h=token.get("volume", {}).get("h24"),
-                liquidity_usd=token.get("liquidity", {}).get("usd"),
-                market_cap=token.get("marketCap") or 0,
-                holder_count=token.get("holder_count"),
-                signal=analysis["signal"],
-                confidence=analysis["confidence"],
-            )
-            await DB.update_coin_intraday_changes(address)
-        else:
-            await DB.add_coin(
-                token_address=address,
-                symbol=token.get("symbol", "UNKNOWN"),
-                name=token.get("name", "Unknown"),
-                price_at_discovery=token.get("priceUsd", 0),
-                ai_score=analysis["confidence"],
-                signal=analysis["signal"],
-                deployer_address=deployer_address or None,
-                discovery_source=token.get("source", "unknown"),
-                chain=chain,
-                extra_data={
-                    "reasoning": analysis["reasoning"],
-                    "risk_level": analysis["risk_level"],
-                    "tags": analysis["tags"],
-                    "source": token.get("source", "unknown"),
-                    "chain": chain,
-                    "basescan": token.get("basescan") if chain.lower() == "base" else None,
-                    "contract_creation": token.get("contract_creation") if chain.lower() == "base" else None,
-                    "top_holders": token.get("top_holders") if chain.lower() == "base" else None,
-                    "holder_count": token.get("holder_count"),
-                    "holder_trend": token.get("holder_trend"),
-                    "volume_trend": token.get("volume_trend"),
-                },
-            )
-            await DB.update_coin_market_data(
-                token_address=address,
-                price_usd=token.get("priceUsd", 0),
-                volume_24h=token.get("volume", {}).get("h24"),
-                liquidity_usd=token.get("liquidity", {}).get("usd"),
-                market_cap=token.get("marketCap") or 0,
-                holder_count=token.get("holder_count"),
-            )
-            await DB.record_price_history(
-                token_address=address,
-                symbol=token.get("symbol", "UNKNOWN"),
-                price_usd=token.get("priceUsd", 0),
-                volume_24h=token.get("volume", {}).get("h24"),
-                liquidity_usd=token.get("liquidity", {}).get("usd"),
-                market_cap=token.get("marketCap") or 0,
-                holder_count=token.get("holder_count"),
-                signal=analysis["signal"],
-                confidence=analysis["confidence"],
-            )
-            await DB.update_coin_intraday_changes(address)
-            
-            if deployer_address:
-                await DB.update_deployer_stats(deployer_address)
-
-        # Log and execute significant signals
-        if analysis["signal"] == "buy" and analysis["confidence"] > 0.7:
-            await DB.log_event(
-                "info", "strong_buy_signal",
-                f"{token.get('symbol', 'UNKNOWN')} ({chain}): {analysis['reasoning']}",
-                {"token_address": address, "symbol": token.get("symbol", ""), "chain": chain, "confidence": analysis["confidence"], "price": token.get("priceUsd", 0)},
-            )
-            await self._maybe_execute_trade(address, token, analysis, chain)
 
     async def run(self):
-        """Continuous scan loop."""
+        """Main scanner loop."""
         self.running = True
+        await DB.log_event("info", "scanner_started", "Solana pump.fun scanner started")
         while self.running:
             try:
                 await self.scan_once()
+                await asyncio.sleep(settings.scan_interval_seconds)
             except Exception as e:
-                await DB.log_event("error", "scan_cycle_failed", str(e))
-            await asyncio.sleep(settings.scan_interval_seconds)
+                await DB.log_event("error", "scanner_loop_failed", str(e))
+                await asyncio.sleep(60)
 
     def stop(self):
         self.running = False

@@ -14,7 +14,6 @@ class Settings(BaseSettings):
     # LLM Provider (DeepSeek)
     llm_provider: str = Field(default="deepseek", description="LLM provider: deepseek or venice")
     deepseek_api_key: Optional[SecretStr] = Field(None, description="DeepSeek API key")
-    # Current DeepSeek public model name. The old "deepseek-v4-flash" alias returns 404.
     deepseek_model: str = "deepseek-chat"
     deepseek_base_url: str = "https://api.deepseek.com/v1"
 
@@ -22,11 +21,6 @@ class Settings(BaseSettings):
     venice_api_key: Optional[SecretStr] = None
     venice_model: str = "claude-opus-4.6"
     venice_base_url: str = "https://api.venice.ai/api/v1"
-
-    # Base Chain (optional - only needed if trading on Base)
-    base_wallet_private_key: Optional[SecretStr] = Field(None, description="Base chain private key")
-    base_wallet_address: Optional[str] = Field(None, description="Base chain wallet address")
-    base_rpc: str = "https://mainnet.base.org"
 
     # Solana Chain
     solana_wallet_private_key: Optional[SecretStr] = Field(None, description="Solana wallet private key (base58)")
@@ -50,7 +44,7 @@ class Settings(BaseSettings):
     def database_url_clean(self) -> str:
         """Return database URL suitable for async SQLAlchemy."""
         url = self.database_url.get_secret_value()
-        # Render PostgreSQL uses postgresql:// — convert to postgresql+asyncpg://
+        # Render PostgreSQL uses postgresql:// — convert to postgresql+asyncpg:***@property
         if url.startswith("postgresql://") and "+asyncpg" not in url:
             url = url.replace("postgresql://", "postgresql+asyncpg://")
         # Remove sslmode=require for asyncpg (it handles SSL differently)
@@ -71,7 +65,6 @@ class Settings(BaseSettings):
     dune_api_key: Optional[SecretStr] = None
 
     # Odos (aggregator)
-    odos_api_key: Optional[SecretStr] = None
 
     # WhatShouldICharge API
     wsic_api_key: Optional[SecretStr] = None
@@ -128,7 +121,7 @@ class Settings(BaseSettings):
 
     @property
     def enabled_chains(self) -> list:
-        return [c.strip().lower() for c in self.chains_to_scan.split(",") if c.strip()]
+        return ["solana"]
 
     class Config:
         env_file = ".env"

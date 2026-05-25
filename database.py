@@ -728,16 +728,16 @@ class DB:
     @staticmethod
     async def record_wallet_snapshot(
         total_balance_usd: float,
-        eth_balance: float,
+        sol_balance: float,
         token_balances: dict = None,
     ) -> WalletSnapshot:
         """Record wallet snapshot."""
         async with async_session() as session:
             snapshot = WalletSnapshot(
-                address=settings.base_wallet_address,
-                chain="base",
+                address=settings.solana_wallet_address or "",
+                chain="solana",
                 total_usd=total_balance_usd,
-                eth_balance=eth_balance,
+                sol_balance=sol_balance,
                 token_balances=str(token_balances) if token_balances else None,
             )
             session.add(snapshot)
@@ -913,6 +913,7 @@ class DB:
             return {
                 "current_balance": float(latest.total_usd) if latest else 0.0,
                 "eth_balance": float(latest.eth_balance) if latest else 0.0,
+                "sol_balance": float(latest.sol_balance) if latest else 0.0,
                 "total_coins_scanned": total_coins,
                 "bullish_signals": bullish_coins,
                 "bearish_signals": bearish_coins,

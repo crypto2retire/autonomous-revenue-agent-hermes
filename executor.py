@@ -1,16 +1,11 @@
-"""Trade executor — paper and live trading via Odos V3 (Base) or Jupiter (Solana)."""
+"""Trade executor — paper and live trading via Jupiter (Solana only)."""
 
 import asyncio
-import json
 import uuid
-from decimal import Decimal
+from datetime import datetime
 from typing import Optional, Dict, Any
 
 import httpx
-try:
-    from web3 import Web3
-except ModuleNotFoundError:  # Paper mode does not need web3 installed locally.
-    Web3 = None
 
 from config import get_settings
 from database import DB
@@ -21,12 +16,6 @@ from solana_price_client import get_solana_price_client
 
 settings = get_settings()
 
-# Base chain config
-BASE_RPC = "https://mainnet.base.org"
-ODOS_API = "https://api.odos.xyz"
-ODOS_ROUTER_V3 = "0x0D05a7D3448512B78fa8A9e46c4872C88C4a0D05"
-WETH = "0x4200000000000000000000000000000000000006"
-
 # Solana config
 SOLANA_RPC = "https://api.mainnet-beta.solana.com"
 JUPITER_API = "https://quote-api.jup.ag/v6"
@@ -34,30 +23,19 @@ WSOL = "So11111111111111111111111111111111111111112"  # Wrapped SOL
 
 
 class Executor:
-    """Executes trades via Odos V3 (Base) or Jupiter (Solana)."""
+    """Executes trades via Jupiter on Solana."""
 
     def __init__(self):
         self.http = httpx.AsyncClient(timeout=60.0)
-        self.w3 = Web3(Web3.HTTPProvider(BASE_RPC)) if Web3 is not None else None
         self.jupiter = get_jupiter()
         self.solana = SolanaClient(
             rpc_url=settings.solana_rpc,
             private_key=settings.solana_wallet_private_key.get_secret_value() if settings.solana_wallet_private_key else None,
         )
         self.running = False
-        # Rate limit tracking for Odos
-        self._odos_last_call = 0
-        self._odos_min_interval = 1.1  # 1.1s — free tier is 1 RPS, stay slightly under
         # Rate limit tracking for Jupiter
         self._jupiter_last_call = 0
         self._jupiter_min_interval = 2.0  # 2s between Jupiter API calls to avoid 429
-
-    def _odos_headers(self) -> Dict[str, str]:
-        """Build Odos request headers. Include API key if configured."""
-        headers = {"Content-Type": "application/json"}
-        if settings.odos_api_key:
-            headers["x-api-key"] = settings.odos_api_key.get_secret_value()
-        return headers
 
     async def close(self):
         await self.http.aclose()
@@ -65,76 +43,6 @@ class Executor:
         await self.solana.close()
         price_client = await get_solana_price_client()
         await price_client.close()
-
-    # ── Odos V3 (Base) ───────────────────────────────────────────────
-
-    async def _odos_rate_limit(self):
-        """Enforce minimum interval between Odos API calls."""
-        now = asyncio.get_event_loop().time()
-        elapsed = now - self._odos_last_call
-        if elapsed < self._odos_min_interval:
-            await asyncio.sleep(self._odos_min_interval - elapsed)
-        self._odos_last_call = asyncio.get_event_loop().time()
-
-    async def _odos_post(self, url: str, payload: dict) -> dict:
-        """POST to Odos with rate limiting, retries, and auth."""
-        await self._odos_rate_limit()
-        headers = self._odos_headers()
-        for attempt in range(3):
-            try:
-                resp = await self.http.post(url, json=payload, headers=headers)
-                resp.raise_for_status()
-                return resp.json()
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 429:
-                    wait = (attempt + 1) * 5  # Wait longer: 5s, 10s, 15s
-                    await DB.log_event(
-                        "warning", "odos_rate_limited",
-                        f"Attempt {attempt + 1}/3, waiting {wait}s",
-                        {"url": url},
-                    )
-                    await asyncio.sleep(wait)
-                    continue
-                elif e.response.status_code == 400:
-                    # Log the error response for debugging
-                    error_text = e.response.text
-                    await DB.log_event(
-                        "error", "odos_bad_request",
-                        f"Odos 400: {error_text[:200]}",
-                        {"url": url, "payload": str(payload)[:500]},
-                    )
-                    raise RuntimeError(f"Odos API bad request: {error_text[:200]}")
-                raise
-        raise RuntimeError(f"Odos API rate limited after 3 retries: {url}")
-
-    async def get_odos_quote(
-        self,
-        token_in: str,
-        token_out: str,
-        amount_in: str,
-        sender: str,
-    ) -> dict:
-        """Get Odos V3 swap quote."""
-        url = f"{ODOS_API}/sor/quote/v3"
-        payload = {
-            "chainId": 8453,
-            "inputTokens": [{"tokenAddress": token_in, "amount": amount_in}],
-            "outputTokens": [{"tokenAddress": token_out, "proportion": 1}],
-            "userAddr": sender,
-            "slippageLimitPercent": settings.max_slippage * 100,
-            "sourceBlacklist": [],
-            "sourceWhitelist": [],
-            "simulate": settings.is_paper,
-            "pathViz": False,
-            "compact": True,
-        }
-        return await self._odos_post(url, payload)
-
-    async def assemble_odos_tx(self, path_id: str, sender: str) -> dict:
-        """Assemble the transaction from Odos V3 quote."""
-        url = f"{ODOS_API}/sor/assemble"
-        payload = {"userAddr": sender, "pathId": path_id, "simulate": settings.is_paper}
-        return await self._odos_post(url, payload)
 
     # ── Jupiter (Solana) ─────────────────────────────────────────────
 
@@ -145,7 +53,6 @@ class Executor:
         amount: int,
     ) -> dict:
         """Get Jupiter swap quote with rate limiting."""
-        # Enforce rate limit
         now = asyncio.get_event_loop().time()
         elapsed = now - self._jupiter_last_call
         if elapsed < self._jupiter_min_interval:
@@ -160,7 +67,6 @@ class Executor:
         user_public_key: str,
     ) -> dict:
         """Get serialized Jupiter swap transaction with rate limiting."""
-        # Enforce rate limit
         now = asyncio.get_event_loop().time()
         elapsed = now - self._jupiter_last_call
         if elapsed < self._jupiter_min_interval:
@@ -178,7 +84,7 @@ class Executor:
         amount_usd: float,
         signal: str,
         confidence: float,
-        chain: str = "base",
+        chain: str = "solana",
     ) -> Optional[str]:
         """Execute a buy trade. Returns trade_id or None."""
         trade_id = f"T-{uuid.uuid4().hex[:12].upper()}"
@@ -187,7 +93,7 @@ class Executor:
         await DB.create_trade(
             trade_id=trade_id,
             token_address=token_address,
-            chain=chain,
+            chain="solana",
             symbol=symbol,
             side="buy",
             status=TradeStatus.PENDING,
@@ -202,13 +108,16 @@ class Executor:
             price_client = await get_solana_price_client()
             actual_token_price = await price_client.get_price(token_address, vs_token="USDC")
             if actual_token_price is None or actual_token_price <= 0:
-                await DB.update_trade(trade_id=trade_id, status=TradeStatus.FAILED)
-                await DB.log_event(
-                    "error", "trade_price_fetch_failed",
-                    f"Could not fetch price for {symbol} ({chain}) — trade aborted",
-                    {"token_address": token_address, "symbol": symbol, "chain": chain, "trade_id": trade_id},
-                )
-                return None
+                # Fallback: try DexScreener directly
+                actual_token_price = await self._fetch_dexscreener_price(token_address)
+                if actual_token_price is None or actual_token_price <= 0:
+                    await DB.update_trade(trade_id=trade_id, status=TradeStatus.FAILED)
+                    await DB.log_event(
+                        "error", "trade_price_fetch_failed",
+                        f"Could not fetch price for {symbol} — trade aborted",
+                        {"token_address": token_address, "symbol": symbol, "trade_id": trade_id},
+                    )
+                    return None
 
             # Calculate token quantity bought
             amount_token = amount_usd / actual_token_price if actual_token_price > 0 else 0
@@ -232,16 +141,13 @@ class Executor:
                 )
                 await DB.log_event(
                     "info", "paper_trade_executed",
-                    f"Paper buy {symbol} ({chain}) for ${amount_usd} at ${actual_token_price:.8f}/token",
-                    {"token_address": token_address, "symbol": symbol, "chain": chain,
+                    f"Paper buy {symbol} for ${amount_usd} at ${actual_token_price:.8f}/token",
+                    {"token_address": token_address, "symbol": symbol,
                      "trade_id": trade_id, "amount_usd": amount_usd, "entry_price": actual_token_price},
                 )
             else:
-                # Live trade
-                if chain.lower() == "solana":
-                    await self._execute_solana_buy(trade_id, token_address, symbol, amount_usd)
-                else:
-                    await self._execute_base_buy(trade_id, token_address, symbol, amount_usd)
+                # Live trade on Solana
+                await self._execute_solana_buy(trade_id, token_address, symbol, amount_usd, actual_token_price, amount_token)
 
             return trade_id
 
@@ -249,44 +155,29 @@ class Executor:
             await DB.update_trade(trade_id=trade_id, status=TradeStatus.FAILED)
             await DB.log_event(
                 "error", "trade_execution_failed", str(e),
-                {"token_address": token_address, "symbol": symbol, "chain": chain, "trade_id": trade_id},
+                {"token_address": token_address, "symbol": symbol, "trade_id": trade_id},
             )
             return None
 
-    async def _execute_base_buy(
-        self, trade_id: str, token_address: str, symbol: str, amount_usd: float
-    ):
-        """Execute a live buy on Base via Odos V3."""
-        if self.w3 is None:
-            raise RuntimeError("web3 is required for live Base trading")
-
-        amount_wei = str(int(amount_usd * 1e18))
-        quote = await self.get_odos_quote(WETH, token_address, amount_wei, settings.base_wallet_address)
-        path_id = quote["pathId"]
-
-        assembled = await self.assemble_odos_tx(path_id, settings.base_wallet_address)
-        tx = assembled["transaction"]
-
-        private_key = settings.base_wallet_private_key.get_secret_value()
-        signed = self.w3.eth.account.sign_transaction(tx, private_key)
-        raw_tx = getattr(signed, "raw_transaction", None) or getattr(signed, "rawTransaction")
-        tx_hash = self.w3.eth.send_raw_transaction(raw_tx)
-
-        await DB.update_trade(
-            trade_id=trade_id,
-            status=TradeStatus.EXECUTED,
-            executed_at=datetime.utcnow(),
-            tx_hash=tx_hash.hex(),
-        )
-        await DB.log_event(
-            "info", "live_trade_executed",
-            f"Live buy {symbol} (Base) for ${amount_usd}",
-            {"token_address": token_address, "symbol": symbol, "chain": "base",
-             "trade_id": trade_id, "tx_hash": tx_hash.hex()},
-        )
+    async def _fetch_dexscreener_price(self, token_address: str) -> Optional[float]:
+        """Fallback price fetch from DexScreener."""
+        try:
+            url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
+            resp = await self.http.get(url, timeout=10.0)
+            resp.raise_for_status()
+            data = resp.json()
+            pairs = data.get("pairs", [])
+            if pairs:
+                best = max(pairs, key=lambda p: float(p.get("liquidity", {}).get("usd", 0) or 0))
+                price = float(best.get("priceUsd", 0))
+                return price if price > 0 else None
+        except Exception:
+            pass
+        return None
 
     async def _execute_solana_buy(
-        self, trade_id: str, token_address: str, symbol: str, amount_usd: float
+        self, trade_id: str, token_address: str, symbol: str, amount_usd: float,
+        actual_token_price: float, amount_token: float
     ):
         """Execute a live buy on Solana via Jupiter."""
         if not self.solana.is_loaded:
@@ -300,14 +191,13 @@ class Executor:
         sol_price = await price_client.get_price(WSOL, vs_token="USDC")
         
         if sol_price is None or sol_price <= 0:
-            raise RuntimeError("Could not fetch SOL price from any source (Jupiter, DexScreener, CoinGecko) for trade sizing")
+            raise RuntimeError("Could not fetch SOL price from any source for trade sizing")
 
         amount_lamports = int((amount_usd / sol_price) * 1e9)
 
         # Check wallet has enough SOL (with 0.005 SOL buffer for fees)
         balance = await self.solana.get_balance()
         if balance < amount_lamports + 5_000_000:
-            # Try to get exact fee estimate
             try:
                 fee_estimate = await self.solana.get_fee_estimate()
                 required_lamports = amount_lamports + fee_estimate
@@ -336,23 +226,12 @@ class Executor:
         # Confirm
         await self.solana.confirm_transaction(signature, timeout_sec=60)
 
-        # Get actual token price at time of purchase for proper PNL tracking
-        price_client = await get_solana_price_client()
-        actual_token_price = await price_client.get_price(token_address, vs_token="USDC")
-        if actual_token_price is None or actual_token_price <= 0:
-            actual_token_price = amount_usd  # Fallback to amount if price fetch fails
-        
-        # Update coin price in database so position manager can find it
-        await DB.update_coin_market_data(
-            token_address=token_address,
-            price_usd=actual_token_price,
-        )
-
         await DB.update_trade(
             trade_id=trade_id,
             status=TradeStatus.EXECUTED,
             executed_at=datetime.utcnow(),
             entry_price=actual_token_price,
+            amount_token=amount_token,
             tx_hash=signature,
         )
         await DB.log_event(
@@ -368,30 +247,33 @@ class Executor:
         symbol: str,
         amount_token: float,
         trade_id: str,
-        chain: str = "base",
+        chain: str = "solana",
         reason: str = "signal",
     ) -> bool:
         """Execute a sell to close a position."""
         try:
             if settings.is_paper:
                 await asyncio.sleep(0.3)
+                # Get current price for exit price
+                price_client = await get_solana_price_client()
+                exit_price = await price_client.get_price(token_address, vs_token="USDC")
+                if exit_price is None or exit_price <= 0:
+                    exit_price = amount_token  # Fallback
+                
                 await DB.update_trade(
                     trade_id=trade_id,
                     status=TradeStatus.CLOSED,
                     closed_at=datetime.utcnow(),
                     close_reason=reason,
-                    exit_price=amount_token,
+                    exit_price=exit_price,
                 )
             else:
-                if chain.lower() == "solana":
-                    await self._execute_solana_sell(trade_id, token_address, symbol, amount_token)
-                else:
-                    await self._execute_base_sell(trade_id, token_address, symbol, amount_token)
+                await self._execute_solana_sell(trade_id, token_address, symbol, amount_token)
 
             await DB.log_event(
                 "info", "position_closed",
-                f"Closed {symbol} ({chain}): {reason}",
-                {"token_address": token_address, "symbol": symbol, "chain": chain,
+                f"Closed {symbol}: {reason}",
+                {"token_address": token_address, "symbol": symbol,
                  "trade_id": trade_id, "reason": reason},
             )
             return True
@@ -399,34 +281,9 @@ class Executor:
         except Exception as e:
             await DB.log_event(
                 "error", "sell_execution_failed", str(e),
-                {"token_address": token_address, "symbol": symbol, "chain": chain},
+                {"token_address": token_address, "symbol": symbol},
             )
             return False
-
-    async def _execute_base_sell(
-        self, trade_id: str, token_address: str, symbol: str, amount_token: float
-    ):
-        """Execute a live sell on Base via Odos V3."""
-        if self.w3 is None:
-            raise RuntimeError("web3 is required for live Base trading")
-
-        amount_wei = str(int(amount_token * 1e18))
-        quote = await self.get_odos_quote(token_address, WETH, amount_wei, settings.base_wallet_address)
-        assembled = await self.assemble_odos_tx(quote["pathId"], settings.base_wallet_address)
-        tx = assembled["transaction"]
-
-        private_key = settings.base_wallet_private_key.get_secret_value()
-        signed = self.w3.eth.account.sign_transaction(tx, private_key)
-        raw_tx = getattr(signed, "raw_transaction", None) or getattr(signed, "rawTransaction")
-        tx_hash = self.w3.eth.send_raw_transaction(raw_tx)
-
-        await DB.update_trade(
-            trade_id=trade_id,
-            status=TradeStatus.CLOSED,
-            closed_at=datetime.utcnow(),
-            close_reason="signal",
-            tx_hash=tx_hash.hex(),
-        )
 
     async def _execute_solana_sell(
         self, trade_id: str, token_address: str, symbol: str, amount_token: float
@@ -452,34 +309,26 @@ class Executor:
         signature = await self.solana.send_transaction(signed_tx)
         await self.solana.confirm_transaction(signature, timeout_sec=60)
 
+        # Get exit price for PNL tracking
+        price_client = await get_solana_price_client()
+        exit_price = await price_client.get_price(token_address, vs_token="USDC")
+        if exit_price is None or exit_price <= 0:
+            exit_price = 0
+
         await DB.update_trade(
             trade_id=trade_id,
             status=TradeStatus.CLOSED,
             closed_at=datetime.utcnow(),
             close_reason="signal",
+            exit_price=exit_price,
             tx_hash=signature,
         )
 
-    # ── Position Manager (DEPRECATED — use position_manager.py) ──────
-
-    async def check_positions(self):
-        """Check open positions for stop-loss / take-profit.
-        
-        DEPRECATED: This logic has been moved to position_manager.py (Sell Agent).
-        Kept for backward compatibility.
-        """
-        pass
-
     async def run(self):
-        """Background position manager loop.
-        
-        DEPRECATED: The Sell Agent now runs in position_manager.py.
-        This loop is kept minimal to avoid conflicts.
-        """
+        """Background position manager loop (deprecated — use position_manager.py)."""
         self.running = True
         while self.running:
             try:
-                # Minimal check — real logic is in PositionManager
                 await asyncio.sleep(60)
             except Exception as e:
                 await DB.log_event("error", "executor_loop_failed", str(e))
@@ -487,7 +336,3 @@ class Executor:
 
     def stop(self):
         self.running = False
-
-
-# Import datetime at module level for executor
-from datetime import datetime

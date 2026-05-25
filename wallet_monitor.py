@@ -162,34 +162,20 @@ class WalletMonitor:
     # ── Capital Allocation ───────────────────────────────────────────
 
     async def get_capital_allocation(self) -> Dict[str, Any]:
-        """Compute full capital allocation picture for both agents."""
-        # Check cache
+        """Compute full capital allocation picture."""
         now = datetime.utcnow()
         if self._cache_time and (now - self._cache_time).total_seconds() < self._cache_ttl_seconds:
             return self._cache
 
         solana = await self.get_solana_balance()
-        base = await self.get_base_balance()
         positions = await self.get_open_position_values()
 
-        # Total liquid capital (non-invested)
         liquid_sol = solana["total_usd"]
-        liquid_base = base["total_usd"]
-        total_liquid = liquid_sol + liquid_base
-
-        # Total portfolio value
+        total_liquid = liquid_sol
         total_portfolio = total_liquid + positions["total_current_value"]
-
-        # Capital deployed percentage
         deployed_pct = (positions["total_current_value"] / total_portfolio * 100) if total_portfolio > 0 else 0
-
-        # Free capital percentage
         free_pct = 100 - deployed_pct
-
-        # Can buy? (need at least min_free_capital_pct free)
         can_buy = free_pct >= (settings.min_free_capital_pct * 100)
-
-        # Should recycle? (under min_free_capital_pct and have losers)
         should_recycle = free_pct < (settings.min_free_capital_pct * 100) and positions["position_count"] > 0
 
         allocation = {
@@ -197,7 +183,6 @@ class WalletMonitor:
             "total_portfolio_value": total_portfolio,
             "total_liquid": total_liquid,
             "solana": solana,
-            "base": base,
             "positions": positions,
             "deployed_pct": deployed_pct,
             "free_pct": free_pct,
@@ -205,18 +190,16 @@ class WalletMonitor:
             "should_recycle": should_recycle,
             "max_new_position_size": min(
                 settings.max_trade_size_usd,
-                total_liquid * 0.25,  # Max 25% of liquid per trade
+                total_liquid * 0.25,
             ) if can_buy else 0,
         }
 
-        # Cache it
         self._cache = allocation
         self._cache_time = now
 
-        # Record snapshot
         await DB.record_wallet_snapshot(
             total_balance_usd=total_portfolio,
-            eth_balance=base.get("eth_balance", 0),
+            sol_balance=solana.get("sol_balance", 0),
             token_balances={
                 "sol_balance": solana.get("sol_balance", 0),
                 "sol_price": solana.get("sol_price_usd", 0),
