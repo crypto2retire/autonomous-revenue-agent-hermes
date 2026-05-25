@@ -121,8 +121,7 @@ async def get_coins(
     hold = sum(1 for c in coins if c.signal == "hold")
     rugged = sum(1 for c in coins if c.is_rugged)
     
-    # Chain breakdown
-    base_count = sum(1 for c in coins if c.chain == "base")
+    # Chain breakdown — Solana only
     solana_count = sum(1 for c in coins if c.chain == "solana")
     
     # Calculate average confidence
@@ -151,7 +150,6 @@ async def get_coins(
     
     stats = {
         "total_coins": total,
-        "base_coins": base_count,
         "solana_coins": solana_count,
         "buy_signals": buy_signals,
         "sell_signals": sell_signals,
@@ -515,7 +513,7 @@ async def dashboard():
 </head>
 <body>
     <div class="container">
-        <h1>🤖 Crypto Trading Agent</h1>
+        <h1>🚀 Pump.fun Solana Trading Agent</h1>
         <div class="health-bar" id="health-bar">
             <div class="health-indicator">
                 <div class="health-dot idle" id="health-scanner-dot"></div>
@@ -541,7 +539,7 @@ async def dashboard():
                 <span class="health-value" id="health-positions">-</span>
             </div>
         </div>
-        <p class="subtitle">Autonomous scanner, analyzer &amp; executor</p>
+        <p class="subtitle">Solana-only pump.fun scanner with rule-based scoring</p>
 
         <div class="tabs">
             <div class="tab active" onclick="showTab('watchlist')">📊 Watchlist</div>
@@ -590,7 +588,7 @@ async def dashboard():
                         <th>Volume 24h</th>
                         <th>Liquidity</th>
                         <th>Holders</th>
-                        <th>AI Score</th>
+                        <th>Rule Score</th>
                         <th>Scans</th>
                         <th>Deployer</th>
                         <th>Last Seen</th>
@@ -616,7 +614,7 @@ async def dashboard():
                         <th>Price</th>
                         <th>Peak Gain</th>
                         <th>Signal</th>
-                        <th>AI Score</th>
+                        <th>Rule Score</th>
                         <th>Source</th>
                     </tr>
                 </thead>
@@ -631,7 +629,7 @@ async def dashboard():
                         <th>Price</th>
                         <th>Change</th>
                         <th>Signal</th>
-                        <th>AI Score</th>
+                        <th>Rule Score</th>
                     </tr>
                 </thead>
                 <tbody id="market-losers-body"></tbody>
@@ -645,7 +643,7 @@ async def dashboard():
                         <th>Scans</th>
                         <th>Price</th>
                         <th>Signal</th>
-                        <th>AI Score</th>
+                        <th>Rule Score</th>
                     </tr>
                 </thead>
                 <tbody id="market-trending-body"></tbody>
@@ -934,7 +932,7 @@ async def dashboard():
                             <div class="info-value"><span class="badge badge-${coin.signal}">${coin.signal?.toUpperCase()}</span></div>
                         </div>
                         <div class="info-item">
-                            <div class="info-label">AI Confidence</div>
+                            <div class="info-label">Rule Confidence</div>
                             <div class="info-value">${((coin.confidence || 0) * 100).toFixed(0)}%</div>
                         </div>
                         <div class="info-item">
@@ -980,7 +978,7 @@ async def dashboard():
                     </div>
                     
                     ${coin.ai_analysis ? `<div style="margin-top: 15px; padding: 15px; background: #0d1117; border-radius: 6px;">
-                        <div class="info-label">AI Analysis</div>
+                        <div class="info-label">Analysis</div>
                         <div style="margin-top: 8px; white-space: pre-wrap;">${coin.ai_analysis}</div>
                     </div>` : ''}
                 </div>
