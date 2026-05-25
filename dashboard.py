@@ -456,6 +456,7 @@ async def dashboard():
         .health-dot.healthy { background: #34d399; }
         .health-dot.stale { background: #fbbf24; }
         .health-dot.idle { background: #9ca3af; }
+        .health-dot.offline { background: #64748b; }
         .health-label { color: #8892a0; }
         .health-value { color: #e0e6ed; font-weight: 600; }
         .deployer-info {
@@ -1154,7 +1155,7 @@ async def dashboard():
                     <td><span class="badge badge-${t.side === 'buy' ? 'buy' : 'sell'}">${t.side?.toUpperCase()}</span></td>
                     <td>${fmtNum(t.amount_usd)}</td>
                     <td>${fmtNum(t.entry_price, 6)}</td>
-                    <td>${fmtNum(t.amount_token)}</td>
+                    <td>${fmtNum(t.amount_usd)}</td>
                     <td>${t.is_paper ? 'Paper' : 'Live'}</td>
                     <td><span class="badge badge-${t.status}">${t.status?.toUpperCase()}</span></td>
                     <td>${timeAgo(t.created_at)}</td>
@@ -1325,6 +1326,12 @@ async def dashboard():
                 document.getElementById('health-positions').textContent = data.counts?.open_positions || 0;
             } catch (e) {
                 console.error('Health bar fetch failed:', e);
+                document.getElementById('health-scanner').textContent = 'offline';
+                document.getElementById('health-scanner-dot').className = 'health-dot offline';
+                document.getElementById('health-price').textContent = 'offline';
+                document.getElementById('health-price-dot').className = 'health-dot offline';
+                document.getElementById('health-trade').textContent = 'offline';
+                document.getElementById('health-trade-dot').className = 'health-dot offline';
             }
         }
 

@@ -821,6 +821,60 @@ class DB:
             return metric
 
     @staticmethod
+    async def get_trade_stats() -> dict:
+        """Aggregate trade statistics for the performance dashboard."""
+        async with async_session() as session:
+            total_trades = await session.scalar(select(func.count(Trade.id)))
+            buy_trades = await session.scalar(
+                select(func.count(Trade.id)).where(Trade.side == "buy")
+            )
+            sell_trades = await session.scalar(
+                select(func.count(Trade.id)).where(Trade.side == "sell")
+            )
+            executed_trades = await session.scalar(
+                select(func.count(Trade.id)).where(Trade.status == "executed")
+            )
+            closed_trades = await session.scalar(
+                select(func.count(Trade.id)).where(Trade.status == "closed")
+            )
+
+            # PnL for closed trades
+            total_pnl_result = await session.execute(
+                select(func.coalesce(func.sum(Trade.pnl_usd), 0)).where(Trade.status == "closed")
+            )
+            total_pnl_usd = float(total_pnl_result.scalar() or 0)
+
+            # Win rate: closed trades with positive PnL
+            winning_trades = await session.scalar(
+                select(func.count(Trade.id)).where(
+                    Trade.status == "closed",
+                    Trade.pnl_usd > 0
+                )
+            )
+            win_rate = (winning_trades / closed_trades * 100) if (closed_trades and closed_trades > 0) else 0
+
+            # Average trade size (USD) for executed+buy trades
+            avg_size_result = await session.execute(
+                select(func.coalesce(func.avg(Trade.amount_usd), 0)).where(
+                    Trade.side == "buy",
+                    Trade.status == "executed"
+                )
+            )
+            avg_trade_size = float(avg_size_result.scalar() or 0)
+
+            return {
+                "total_trades": total_trades or 0,
+                "buy_trades": buy_trades or 0,
+                "sell_trades": sell_trades or 0,
+                "executed_trades": executed_trades or 0,
+                "closed_trades": closed_trades or 0,
+                "total_pnl_usd": total_pnl_usd,
+                "winning_trades": winning_trades or 0,
+                "win_rate": round(win_rate, 2),
+                "avg_trade_size": round(avg_trade_size, 2),
+            }
+
+    @staticmethod
     async def get_performance_summary(hours: int = 24) -> dict:
         """Get performance summary."""
         async with async_session() as session:
