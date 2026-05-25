@@ -4,7 +4,7 @@ import os
 import shutil
 import asyncio
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy import select, desc, func, and_, update
+from sqlalchemy import select, desc, func, and_, update, text
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 
@@ -74,9 +74,31 @@ class DB:
 
     @staticmethod
     async def init():
-        """Create all tables."""
+        """Create all tables and apply small compatibility migrations."""
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await DB._ensure_schema(conn)
+
+    @staticmethod
+    async def _ensure_schema(conn):
+        """Add columns that create_all() cannot add to existing databases."""
+        db_url = database_url.lower()
+
+        if db_url.startswith("sqlite"):
+            result = await conn.execute(text("PRAGMA table_info(wallet_snapshots)"))
+            wallet_columns = {row[1] for row in result.fetchall()}
+            if "sol_balance" not in wallet_columns:
+                await conn.execute(text("ALTER TABLE wallet_snapshots ADD COLUMN sol_balance NUMERIC(24, 12)"))
+            return
+
+        result = await conn.execute(text("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'wallet_snapshots'
+        """))
+        wallet_columns = {row[0] for row in result.fetchall()}
+        if "sol_balance" not in wallet_columns:
+            await conn.execute(text("ALTER TABLE wallet_snapshots ADD COLUMN sol_balance NUMERIC(24, 12)"))
 
     @staticmethod
     async def backup():
