@@ -35,7 +35,13 @@ class PumpFunScanner:
         self.scanner = Scanner()  # Reuse for analysis + trade execution
         # Rate limiters to prevent 429 errors
         self._dexscreener_last_call = 0
-        self._dexscreener_min_interval = 1.1  # 1.1s between DexScreener calls (free tier ~60/min)
+        self._dexscreener_min_interval = 2.0  # Stay comfortably below shared/free DexScreener limits
+        self._dexscreener_backoff_until = 0.0
+        self._dexscreener_backoff_seconds = 60.0
+        self._dexscreener_backoff_logged = False
+        self._pumpswap_cache: List[Dict[str, Any]] = []
+        self._pumpswap_cache_time = 0.0
+        self._pumpswap_cache_ttl = 300.0
         self._helius_last_call = 0
         self._helius_min_interval = 1.1  # 1.1s between Helius RPC calls
 
@@ -50,6 +56,47 @@ class PumpFunScanner:
         if elapsed < self._dexscreener_min_interval:
             await asyncio.sleep(self._dexscreener_min_interval - elapsed)
         self._dexscreener_last_call = asyncio.get_event_loop().time()
+
+    async def _dexscreener_get_json(self, url: str, params: Optional[dict] = None) -> Optional[Any]:
+        """GET DexScreener JSON with 429 backoff instead of log-spamming errors."""
+        loop = asyncio.get_event_loop()
+        now = loop.time()
+        if now < self._dexscreener_backoff_until:
+            wait_seconds = int(self._dexscreener_backoff_until - now)
+            if not self._dexscreener_backoff_logged:
+                await DB.log_event(
+                    "warning",
+                    "dexscreener_rate_limited",
+                    f"DexScreener is rate-limited; pausing DexScreener calls for {wait_seconds}s",
+                    {"wait_seconds": wait_seconds},
+                )
+                self._dexscreener_backoff_logged = True
+            return None
+
+        await self._dexscreener_rate_limit()
+        resp = await self.http.get(url, params=params)
+        if resp.status_code == 429:
+            retry_after = resp.headers.get("retry-after")
+            try:
+                wait_seconds = float(retry_after) if retry_after else self._dexscreener_backoff_seconds
+            except (TypeError, ValueError):
+                wait_seconds = self._dexscreener_backoff_seconds
+            wait_seconds = max(60.0, min(wait_seconds, 900.0))
+            self._dexscreener_backoff_until = loop.time() + wait_seconds
+            self._dexscreener_backoff_seconds = min(wait_seconds * 2, 900.0)
+            self._dexscreener_backoff_logged = True
+            await DB.log_event(
+                "warning",
+                "dexscreener_rate_limited",
+                f"DexScreener returned 429; backing off for {int(wait_seconds)}s",
+                {"url": url, "wait_seconds": wait_seconds},
+            )
+            return None
+
+        resp.raise_for_status()
+        self._dexscreener_backoff_seconds = 60.0
+        self._dexscreener_backoff_logged = False
+        return resp.json()
 
     async def _helius_rate_limit(self):
         """Enforce minimum interval between Helius RPC calls."""
@@ -102,10 +149,18 @@ class PumpFunScanner:
         """Get latest PumpSwap pairs from DexScreener (pump.fun's DEX)."""
         url = f"{DEXSCREENER_BASE}/latest/dex/search"
         try:
-            await self._dexscreener_rate_limit()
-            resp = await self.http.get(url, params={"q": "pumpswap"})
-            resp.raise_for_status()
-            data = resp.json()
+            data = await self._dexscreener_get_json(url, params={"q": "pumpswap"})
+            if data is None:
+                cache_age = asyncio.get_event_loop().time() - self._pumpswap_cache_time
+                if self._pumpswap_cache and cache_age <= self._pumpswap_cache_ttl:
+                    await DB.log_event(
+                        "warning",
+                        "dexscreener_pumpswap_cache_used",
+                        f"Using cached PumpSwap pairs during DexScreener backoff ({int(cache_age)}s old)",
+                        {"cache_age_seconds": cache_age, "count": len(self._pumpswap_cache)},
+                    )
+                    return self._pumpswap_cache[:limit]
+                return []
             pairs = data.get("pairs", [])
             # Filter to Solana only and pump-related DEXes
             pairs = [
@@ -113,7 +168,10 @@ class PumpFunScanner:
                 if p.get("chainId", "").lower() == "solana"
                 and "pump" in str(p.get("dexId", "")).lower()
             ]
-            return pairs[:limit]
+            pairs = pairs[:limit]
+            self._pumpswap_cache = pairs
+            self._pumpswap_cache_time = asyncio.get_event_loop().time()
+            return pairs
         except Exception as e:
             await DB.log_event("error", "dexscreener_pumpswap_failed", str(e))
             return []
@@ -122,10 +180,10 @@ class PumpFunScanner:
         """Get pair data for a Solana token from DexScreener."""
         url = f"{DEXSCREENER_BASE}/token-pairs/v1/solana/{token_address}"
         try:
-            await self._dexscreener_rate_limit()
-            resp = await self.http.get(url)
-            resp.raise_for_status()
-            return resp.json()
+            data = await self._dexscreener_get_json(url)
+            if data is None:
+                return []
+            return data
         except Exception as e:
             await DB.log_event("error", "dexscreener_sol_pairs_failed", str(e), {"token": token_address})
             return []
