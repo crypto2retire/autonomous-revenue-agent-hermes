@@ -473,6 +473,7 @@ async def dashboard():
         .health-dot.stale { background: #fbbf24; }
         .health-dot.idle { background: #9ca3af; }
         .health-dot.offline { background: #64748b; }
+        .health-dot.unknown { background: #64748b; }
         .health-label { color: #8892a0; }
         .health-value { color: #e0e6ed; font-weight: 600; }
         .deployer-info {
