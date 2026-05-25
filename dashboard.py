@@ -30,48 +30,66 @@ async def get_status():
     from datetime import datetime
     now = datetime.utcnow()
     
-    # Get latest log events for each component
-    logs = await DB.get_logs(limit=50, hours=1)
-    
-    latest_scan = None
-    latest_price_refresh = None
-    latest_trade = None
-    
-    for log in logs:
-        if latest_scan is None and "scan" in (log.event or "").lower():
-            latest_scan = log.created_at
-        if latest_price_refresh is None and "price" in (log.event or "").lower():
-            latest_price_refresh = log.created_at
-        if latest_trade is None and "trade" in (log.event or "").lower():
-            latest_trade = log.created_at
-    
-    # Count active coins and positions
-    coins = await DB.get_all_coins(limit=1)
-    positions = await DB.get_open_positions()
-    
-    return {
-        "status": "ok",
-        "agent": "crypto-trading-agent",
-        "timestamp": now.isoformat(),
-        "components": {
-            "scanner": {
-                "status": "healthy" if latest_scan is not None and (now - latest_scan).total_seconds() < 300 else "stale",
-                "last_scan": latest_scan.isoformat() if latest_scan is not None else None,
+    try:
+        # Get latest log events for each component
+        logs = await DB.get_logs(limit=50, hours=1)
+        
+        latest_scan = None
+        latest_price_refresh = None
+        latest_trade = None
+        
+        for log in logs:
+            if latest_scan is None and "scan" in (log.event or "").lower():
+                latest_scan = log.created_at
+            if latest_price_refresh is None and "price" in (log.event or "").lower():
+                latest_price_refresh = log.created_at
+            if latest_trade is None and "trade" in (log.event or "").lower():
+                latest_trade = log.created_at
+        
+        # Count active coins and positions
+        coins = await DB.get_all_coins(limit=1)
+        positions = await DB.get_open_positions()
+        
+        return {
+            "status": "ok",
+            "agent": "crypto-trading-agent",
+            "timestamp": now.isoformat(),
+            "components": {
+                "scanner": {
+                    "status": "healthy" if latest_scan is not None and (now - latest_scan).total_seconds() < 300 else "stale",
+                    "last_scan": latest_scan.isoformat() if latest_scan is not None else None,
+                },
+                "price_refresh": {
+                    "status": "healthy" if latest_price_refresh is not None and (now - latest_price_refresh).total_seconds() < 120 else "stale",
+                    "last_refresh": latest_price_refresh.isoformat() if latest_price_refresh is not None else None,
+                },
+                "trading": {
+                    "status": "healthy" if latest_trade is not None and (now - latest_trade).total_seconds() < 600 else "idle",
+                    "last_trade": latest_trade.isoformat() if latest_trade is not None else None,
+                },
             },
-            "price_refresh": {
-                "status": "healthy" if latest_price_refresh is not None and (now - latest_price_refresh).total_seconds() < 120 else "stale",
-                "last_refresh": latest_price_refresh.isoformat() if latest_price_refresh is not None else None,
+            "counts": {
+                "tracked_coins": len(coins) if coins else 0,
+                "open_positions": len(positions),
             },
-            "trading": {
-                "status": "healthy" if latest_trade is not None and (now - latest_trade).total_seconds() < 600 else "idle",
-                "last_trade": latest_trade.isoformat() if latest_trade is not None else None,
+        }
+    except Exception as e:
+        # Don't crash the endpoint — return degraded status
+        return {
+            "status": "degraded",
+            "agent": "crypto-trading-agent",
+            "timestamp": now.isoformat(),
+            "error": str(e),
+            "components": {
+                "scanner": {"status": "unknown", "last_scan": None},
+                "price_refresh": {"status": "unknown", "last_refresh": None},
+                "trading": {"status": "unknown", "last_trade": None},
             },
-        },
-        "counts": {
-            "tracked_coins": len(coins) if coins else 0,
-            "open_positions": len(positions),
-        },
-    }
+            "counts": {
+                "tracked_coins": 0,
+                "open_positions": 0,
+            },
+        }
 
 
 # ── Coins / Watchlist ──────────────────────────────────────────────
