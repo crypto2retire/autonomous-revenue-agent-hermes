@@ -60,6 +60,8 @@ class JupiterClient:
             "userPublicKey": user_public_key,
             "wrapAndUnwrapSol": wrap_unwrap_sol,
             "prioritizationFeeLamports": "auto",
+            "dynamicComputeUnitLimit": True,
+            "skipUserAccountsRpcCalls": False,
         }
         
         last_error = None
