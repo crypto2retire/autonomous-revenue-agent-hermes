@@ -87,6 +87,16 @@ class Executor:
         chain: str = "solana",
     ) -> Optional[str]:
         """Execute a buy trade. Returns trade_id or None."""
+        
+        # ENFORCE LIVE MODE ONLY - No paper trades
+        if not settings.is_live:
+            await DB.log_event(
+                "warning", "trade_rejected",
+                f"Buy {symbol} rejected: AGENT_MODE is not 'live'. Set AGENT_MODE=live for real trading.",
+                {"token_address": token_address, "symbol": symbol},
+            )
+            return None
+        
         trade_id = f"T-{uuid.uuid4().hex[:12].upper()}"
 
         # Create pending trade record
@@ -100,7 +110,7 @@ class Executor:
             amount_usd=amount_usd,
             signal=signal,
             confidence=confidence,
-            is_paper=not settings.is_live,
+            is_paper=False,  # ALWAYS live
         )
 
         try:
@@ -128,26 +138,8 @@ class Executor:
                 price_usd=actual_token_price,
             )
 
-            if not settings.is_live:
-                # Paper trade: simulate without real execution. Only AGENT_MODE=live may send orders.
-                await asyncio.sleep(0.5)
-                await DB.update_trade(
-                    trade_id=trade_id,
-                    status=TradeStatus.EXECUTED,
-                    executed_at=datetime.utcnow(),
-                    entry_price=actual_token_price,
-                    amount_token=amount_token,
-                    tx_hash=f"PAPER-{uuid.uuid4().hex[:16]}",
-                )
-                await DB.log_event(
-                    "info", "paper_trade_executed",
-                    f"Paper buy {symbol} for ${amount_usd} at ${actual_token_price:.8f}/token",
-                    {"token_address": token_address, "symbol": symbol,
-                     "trade_id": trade_id, "amount_usd": amount_usd, "entry_price": actual_token_price},
-                )
-            else:
-                # Live trade on Solana
-                await self._execute_solana_buy(trade_id, token_address, symbol, amount_usd, actual_token_price, amount_token)
+            # LIVE TRADE ONLY - Execute on Solana via Jupiter
+            await self._execute_solana_buy(trade_id, token_address, symbol, amount_usd, actual_token_price, amount_token)
 
             return trade_id
 
@@ -250,25 +242,19 @@ class Executor:
         chain: str = "solana",
         reason: str = "signal",
     ) -> bool:
-        """Execute a sell to close a position."""
+        """Execute a sell to close a position. LIVE ONLY."""
+        
+        # ENFORCE LIVE MODE ONLY
+        if not settings.is_live:
+            await DB.log_event(
+                "warning", "sell_rejected",
+                f"Sell {symbol} rejected: AGENT_MODE is not 'live'.",
+                {"token_address": token_address, "symbol": symbol, "trade_id": trade_id},
+            )
+            return False
+        
         try:
-            if not settings.is_live:
-                await asyncio.sleep(0.3)
-                # Get current price for exit price
-                price_client = await get_solana_price_client()
-                exit_price = await price_client.get_price(token_address, vs_token="USDC")
-                if exit_price is None or exit_price <= 0:
-                    exit_price = amount_token  # Fallback
-                
-                await DB.update_trade(
-                    trade_id=trade_id,
-                    status=TradeStatus.CLOSED,
-                    closed_at=datetime.utcnow(),
-                    close_reason=reason,
-                    exit_price=exit_price,
-                )
-            else:
-                await self._execute_solana_sell(trade_id, token_address, symbol, amount_token)
+            await self._execute_solana_sell(trade_id, token_address, symbol, amount_token)
 
             await DB.log_event(
                 "info", "position_closed",
